@@ -112,6 +112,10 @@ class AuditEntry:
     behavior_status: str = "missing"
     degraded: bool = False
     fallback_reason: str | None = None
+    explanations: tuple[dict[str, Any], ...] = ()
+    explanation_method: str = "none"
+    block_confirmation_required: bool = False
+    proposed_action: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -133,6 +137,10 @@ class AuditEntry:
             "behavior_status": self.behavior_status,
             "degraded": self.degraded,
             "fallback_reason": self.fallback_reason,
+            "explanations": [dict(item) for item in self.explanations],
+            "explanation_method": self.explanation_method,
+            "block_confirmation_required": self.block_confirmation_required,
+            "proposed_action": self.proposed_action,
         }
 
 
@@ -155,8 +163,8 @@ class AuditLog:
                 os.makedirs(directory, exist_ok=True)
             self._fh = open(path, "a", encoding="utf-8")
 
-    def write(self, entry: AuditEntry) -> dict[str, Any]:
-        record = entry.to_dict()
+    def write(self, entry: AuditEntry | dict[str, Any]) -> dict[str, Any]:
+        record = entry.to_dict() if hasattr(entry, "to_dict") else dict(entry)
         line = json.dumps(record, separators=(",", ":"), sort_keys=True)
         with self._lock:
             self.records.append(record)
@@ -214,6 +222,10 @@ class ScoreResult:
     degraded: bool = False
     fallback_reason: str | None = None
     decided_at: str = ""
+    explanations: list[dict[str, Any]] = field(default_factory=list)
+    explanation_method: str = "none"
+    block_confirmation_required: bool = False
+    proposed_action: str | None = None
 
     def as_dict(self) -> dict[str, Any]:
         return dict(self.__dict__)
@@ -378,6 +390,12 @@ class ScoringService:
             behavior_status=behavior_status,
             degraded=degraded,
             fallback_reason=fallback_reason,
+            explanations=tuple(scored.get("explanations") or ()),
+            explanation_method=str(scored.get("explanation_method", "none")),
+            block_confirmation_required=bool(
+                scored.get("block_confirmation_required", False)
+            ),
+            proposed_action=scored.get("proposed_action"),
         )
         self.audit.write(entry)
 
@@ -405,6 +423,10 @@ class ScoringService:
             degraded=degraded,
             fallback_reason=fallback_reason,
             decided_at=decided_at,
+            explanations=list(entry.explanations),
+            explanation_method=entry.explanation_method,
+            block_confirmation_required=entry.block_confirmation_required,
+            proposed_action=entry.proposed_action,
         )
         self._enqueue_review(result, txn, scoring_txn)
         return result
@@ -460,6 +482,8 @@ class ScoringService:
             "segment": result.segment,
             "model_version": result.model_version,
             "top_signals": list(result.top_signals),
+            "explanations": list(result.explanations),
+            "explanation_method": result.explanation_method,
             "signal_scores": result.signal_scores,
             "model_probability": result.model_probability,
             "ring_probability": result.ring_probability,
@@ -471,6 +495,8 @@ class ScoringService:
             "graph_features": result.graph_features,
             "degraded": result.degraded,
             "fallback_reason": result.fallback_reason,
+            "block_confirmation_required": result.block_confirmation_required,
+            "proposed_action": result.proposed_action,
             "latency_ms": result.latency_ms,
         }
 
@@ -530,13 +556,25 @@ class ScoringService:
                 txn, result["risk_score"], behavior_score, result["top_signals"],
                 two_factor_enrolled=bool(getattr(txn, "two_factor_enrolled", False)),
             )
-            return {**result, "action": decision["action"], "segment": decision["segment"]}
+            return {
+                **result,
+                "action": decision["action"],
+                "segment": decision["segment"],
+                "proposed_action": decision["proposed_action"],
+                "block_confirmation_required": decision[
+                    "block_confirmation_required"
+                ],
+            }
         result = self.decision.score(txn, features, ring_flag=ring_flag)
         return {
             "risk_score": result["risk_score"],
             "top_signals": result["top_signals"],
             "segment": result["segment"],
             "action": result["action"],
+            "proposed_action": result["proposed_action"],
+            "block_confirmation_required": result["block_confirmation_required"],
+            "explanations": result["explanations"],
+            "explanation_method": result["explanation_method"],
             "signal_scores": [],
             "behavior_score": round(behavior_score, 2),
             "model_probability": None,
@@ -553,6 +591,19 @@ class ScoringService:
             "top_signals": decision["top_signals"],
             "segment": decision["segment"],
             "action": decision["action"],
+            "proposed_action": decision["proposed_action"],
+            "block_confirmation_required": decision[
+                "block_confirmation_required"
+            ],
+            "explanations": [
+                {
+                    "feature": signal,
+                    "label": signal,
+                    "contribution": risk / 100.0,
+                    "direction": "increases_risk",
+                }
+            ] if risk else [],
+            "explanation_method": "degraded_fallback",
             "signal_scores": [],
             "behavior_score": 0.0,
             "model_probability": None,

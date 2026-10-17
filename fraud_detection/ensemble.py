@@ -45,21 +45,52 @@ class EnsembleScorer:
             risk += self.ring_boost
         risk = round(min(100.0, max(0.0, risk)), 2)
 
-        signals: list[tuple[str, float]] = []
-        # only features that RAISED the score, above a meaningful magnitude
+        # Signed, per-feature contributions (Saabas path attribution). The
+        # dashboard and review payloads expose these so every score is
+        # explainable, not just labelled with a coarse signal name.
+        contributions: list[dict] = []
         for name, value in self.model.contributions(features).items():
             if value > 0.1:
-                signals.append((label_for(name), value))
+                contributions.append(
+                    {
+                        "feature": name,
+                        "label": label_for(name),
+                        "contribution": round(float(value), 4),
+                        "direction": "increases_risk",
+                    }
+                )
         if behavior_score >= 15.0:
-            signals.append(("behavioral biometrics deviation", behavior_score / 100.0))
+            contributions.append(
+                {
+                    "feature": "behavior_anomaly_score",
+                    "label": "behavioral biometrics deviation",
+                    "contribution": round(behavior_score / 100.0, 4),
+                    "direction": "increases_risk",
+                }
+            )
         if ring_flagged:
-            signals.append(("fraud-ring pattern (shared recipient)", ring_prob))
+            contributions.append(
+                {
+                    "feature": "ring_flag",
+                    "label": "fraud-ring pattern (shared recipient)",
+                    "contribution": round(ring_prob, 4),
+                    "direction": "increases_risk",
+                }
+            )
         for name, value in graph_features.items():
             if name in ("recipient_distinct_payers", "recipient_payers_1h") and value >= 3:
-                signals.append((GRAPH_FEATURE_LABELS[name], value / 10.0))
+                contributions.append(
+                    {
+                        "feature": name,
+                        "label": GRAPH_FEATURE_LABELS[name],
+                        "contribution": round(value / 10.0, 4),
+                        "direction": "increases_risk",
+                    }
+                )
 
-        signals.sort(key=lambda kv: -abs(kv[1]))
-        top = [label for label, _ in signals[: self.top_signals]] or ["no_risk_signals"]
+        contributions.sort(key=lambda item: -abs(item["contribution"]))
+        top_contributions = contributions[: self.top_signals]
+        top = [item["label"] for item in top_contributions] or ["no_risk_signals"]
 
         return {
             "risk_score": risk,
@@ -68,5 +99,9 @@ class EnsembleScorer:
             "ring_probability": round(ring_prob, 4),
             "ring_flag": ring_flagged,
             "top_signals": top,
-            "signal_scores": [(label, round(v, 4)) for label, v in signals[: self.top_signals]],
+            "signal_scores": [
+                (item["label"], item["contribution"]) for item in top_contributions
+            ],
+            "explanations": top_contributions,
+            "explanation_method": "gbdt_saabas_path_attribution",
         }

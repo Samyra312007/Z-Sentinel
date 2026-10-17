@@ -63,6 +63,9 @@ class DecisionConfig:
         }
     )
     graph_ring_boost: float = 15.0  # plan: ring flag boosts score by 15
+    # Segments whose block decisions must be confirmed by an analyst before
+    # the payment is declined (plan 5.2 human-in-the-loop). Empty by default.
+    block_confirmation_segments: tuple[str, ...] = ()
 
     # -- validation / external configuration (plan 4.1) --------------------
 
@@ -93,12 +96,24 @@ class DecisionConfig:
             or not 0.0 <= self.graph_ring_boost <= 100.0
         ):
             raise ValueError("graph_ring_boost must be between 0 and 100")
+        if not isinstance(self.block_confirmation_segments, tuple):
+            raise ValueError("block_confirmation_segments must be a tuple")
+        unknown_segments = set(self.block_confirmation_segments) - set(SEGMENTS)
+        if unknown_segments:
+            raise ValueError(
+                f"unknown block confirmation segments: {sorted(unknown_segments)}"
+            )
+        if len(set(self.block_confirmation_segments)) != len(
+            self.block_confirmation_segments
+        ):
+            raise ValueError("block_confirmation_segments must not contain duplicates")
 
     def to_dict(self) -> dict:
         return {
             "thresholds": {k: dict(v) for k, v in self.thresholds.items()},
             "signal_weights": dict(self.signal_weights),
             "graph_ring_boost": self.graph_ring_boost,
+            "block_confirmation_segments": list(self.block_confirmation_segments),
         }
 
     @classmethod
@@ -106,7 +121,10 @@ class DecisionConfig:
         """Merge a partial JSON config over the safe defaults, then validate."""
         if not isinstance(data, dict):
             raise ValueError("decision config must be an object")
-        unknown = set(data) - {"thresholds", "signal_weights", "graph_ring_boost"}
+        unknown = set(data) - {
+            "thresholds", "signal_weights", "graph_ring_boost",
+            "block_confirmation_segments",
+        }
         if unknown:
             raise ValueError(f"unknown decision config fields: {sorted(unknown)}")
 
@@ -134,10 +152,18 @@ class DecisionConfig:
             raise ValueError("signal_weights must be an object")
         signal_weights.update(raw_weights)
 
+        raw_segments = data.get(
+            "block_confirmation_segments", list(base.block_confirmation_segments)
+        )
+        if not isinstance(raw_segments, (list, tuple)):
+            raise ValueError("block_confirmation_segments must be a list")
+        segments = tuple(str(segment) for segment in raw_segments)
+
         config = cls(
             thresholds=thresholds,
             signal_weights=signal_weights,
             graph_ring_boost=data.get("graph_ring_boost", base.graph_ring_boost),
+            block_confirmation_segments=segments,
         )
         config.validate()
         return config
@@ -254,6 +280,16 @@ class DecisionEngine:
         )
         result["ring_boost"] = ring_boost
         result["signal_scores"] = signals
+        result["explanations"] = [
+            {
+                "feature": name,
+                "label": name,
+                "contribution": points,
+                "direction": "increases_risk",
+            }
+            for name, points in signals[:3]
+        ]
+        result["explanation_method"] = "deterministic_rules"
         return result
 
     # -- business rules on top of any 0-100 risk score ----------------------
@@ -278,8 +314,10 @@ class DecisionEngine:
         if two_factor_enrolled is None:
             two_factor_enrolled = bool(getattr(txn, "two_factor_enrolled", False))
         t = self.config.thresholds[segment]
+        confirmation_required = False
         if score >= t["block"]:
-            action = BLOCK
+            confirmation_required = segment in self.config.block_confirmation_segments
+            action = HOLD if confirmation_required else BLOCK
         elif score >= t["hold"]:
             action = STEP_UP if two_factor_enrolled else HOLD
         elif score >= t["step_up"]:
@@ -296,6 +334,8 @@ class DecisionEngine:
         return {
             "risk_score": score,
             "action": action,
+            "proposed_action": BLOCK if confirmation_required else action,
+            "block_confirmation_required": confirmation_required,
             "top_signals": top_signals or [],
             "segment": segment,
         }
