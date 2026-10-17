@@ -47,6 +47,12 @@ class MonitorConfig:
             raise ValueError("window and baseline_size must be positive")
         if self.min_volume < 1:
             raise ValueError("min_volume must be positive")
+        if self.evaluate_every < 1:
+            raise ValueError("evaluate_every must be positive")
+        if self.alert_history < 1:
+            raise ValueError("alert_history must be positive")
+        if self.drift_threshold < 0 or self.score_shift_threshold < 0:
+            raise ValueError("drift thresholds must be non-negative")
         if not 0.0 <= self.max_fpr <= 1.0:
             raise ValueError("max_fpr must be in [0, 1]")
         if not 0.0 <= self.max_degraded_rate <= 1.0:

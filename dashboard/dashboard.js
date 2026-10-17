@@ -306,6 +306,7 @@ async function selectCase(caseId) {
   try {
     const item = await api(`/api/cases/${encodeURIComponent(caseId)}`);
     state.selected = item;
+    history.replaceState(null, "", `?case=${encodeURIComponent(caseId)}`);
     renderCase(item);
     renderQueue();
   } catch (error) {
@@ -382,8 +383,10 @@ async function loadHealth() {
   }
 }
 
+const deepLinkCase = new URLSearchParams(location.search).get("case");
 loadHealth();
 loadMetrics();
 loadQueue();
+if (deepLinkCase) selectCase(deepLinkCase);
 setInterval(loadMetrics, 5000);
 setInterval(loadQueue, 10000);

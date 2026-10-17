@@ -227,7 +227,8 @@ def _make_handler(context: DashboardContext):
             self.send_header("X-Content-Type-Options", "nosniff")
             self.send_header(
                 "Content-Security-Policy",
-                "default-src 'self'; style-src 'self'; script-src 'self'; img-src 'self' data:",
+                "default-src 'self'; style-src 'self' 'unsafe-inline'; "
+                "script-src 'self'; img-src 'self' data:",
             )
             self.end_headers()
             self.wfile.write(body)
