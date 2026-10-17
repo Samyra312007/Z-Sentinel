@@ -236,29 +236,29 @@ ELSE: ALLOW
 ```
 
 **Configurable thresholds** per segment (new user vs. established, high-value vs. standard, etc.)
-- [ ] Implement configurable threshold per segment
+- [x] Implement configurable threshold per segment (validated JSON, partial overrides)
 
 #### 4.2 Investigator Dashboard
 
 **Purpose:** Allow fraud analysts to review flagged transactions, confirm/refute fraud, provide feedback loop.
 
 **Features:**
-- [ ] Queue of held/review transactions sorted by risk score
-- [ ] Side-by-side: transaction details + behavioral biometrics visualization + model explanation
-- [ ] One-click actions: confirm fraud, clear false positive, request more info
-- [ ] Feedback captured → retraining data
+- [x] Queue of held/review transactions sorted by risk score
+- [x] Side-by-side: transaction details + behavioral biometrics visualization + model explanation
+- [x] One-click actions: confirm fraud, clear false positive, request more info
+- [x] Feedback captured → retraining data
 
 **Technical:**
-- [ ] Web UI (React/Angular) on z/OS via z/OS Connect or connected app server
-- [ ] Data from IBM Z databases
-- [ ] Audit trail of all investigator actions
+- [x] Web UI (dependency-free HTML/CSS/JS; deploy via z/OS Connect or an app server)
+- [x] Data from persistent review store (SQLite demo; IBM Z DB adapter is deployment-specific)
+- [x] Audit trail of all investigator actions
 
 #### 4.3 Alerting & Monitoring
 
-- [ ] Real-time alert when fraud detection rate spikes or drops (model drift detection)
-- [ ] Latency monitoring: p50/p95/p99 of scoring call
-- [ ] False positive rate tracking (customer complaints, step-up abandonment)
-- [ ] Model performance dashboard: score distribution, capture rate (when labels arrive)
+- [x] Real-time alert when fraud detection rate spikes or drops (model drift detection)
+- [x] Latency monitoring: p50/p95/p99 of scoring call
+- [x] False positive rate tracking (review labels; complaint/abandonment feeds are deployment-specific)
+- [x] Model performance dashboard: score distribution, capture rate (when labels arrive)
 
 ---
 

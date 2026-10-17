@@ -13,6 +13,11 @@ per-user aggregates, privacy-preserving behavioral-biometrics SDK and payload
 ingestion, synchronous timeout-bounded scoring with fail-open/fail-closed
 policy, settlement outcomes, and an append-only decision audit trail.
 
+Phase 4 (Decision Engine & UI): validated per-segment threshold configuration,
+a persistent investigator review queue with feedback labels, a browser
+dashboard and HTTP API, and operational monitoring with drift, latency,
+capture and false-positive alerts.
+
 Train and score:
 
     python -m fraud_detection.train --out models/fraud_model.json
@@ -25,6 +30,12 @@ Phase 3 end-to-end integration demo:
     python -m fraud_detection.realtime --model models/fraud_model.json \
         --transactions 500 --audit-log logs/phase3-decisions.jsonl
 
+Phase 4 operations demo (dashboard, review queue, monitoring):
+
+    ./run_phase4.sh
+    python -m fraud_detection.phase4 --model models/fraud_model.json \
+        --transactions 2000 --demo-reviews 12 --check
+
 Rules-only fallback (no model needed):
 
     python -m fraud_detection --transactions 500 --seed 42
@@ -34,4 +45,4 @@ Tests:
     python -m unittest discover -s tests -v
 """
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"

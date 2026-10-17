@@ -1,0 +1,39 @@
+{
+  "thresholds": {
+    "standard": {
+      "log": 30.0,
+      "step_up": 60.0,
+      "hold": 80.0,
+      "block": 95.0
+    },
+    "new_user": {
+      "log": 25.0,
+      "step_up": 55.0,
+      "hold": 75.0,
+      "block": 92.0
+    },
+    "high_value": {
+      "log": 30.0,
+      "step_up": 55.0,
+      "hold": 75.0,
+      "block": 92.0
+    }
+  },
+  "signal_weights": {
+    "behavior_anomaly_score": 0.45,
+    "amount_dev_30d_z_4+": 20.0,
+    "amount_dev_30d_z_2-4": 10.0,
+    "new_recipient_flag": 10.0,
+    "device_change_flag": 12.0,
+    "first_seen_device_flag": 8.0,
+    "impossible_travel_flag": 25.0,
+    "txn_count_1h_5+": 30.0,
+    "txn_count_1h_3-4": 25.0,
+    "new_recipient_and_new_device": 10.0,
+    "odd_hours_high_amount": 8.0,
+    "behavior_missing_flag": 4.0,
+    "mule_recipient_3plus_users": 25.0,
+    "card_testing_retry_pattern": 70.0
+  },
+  "graph_ring_boost": 15.0
+}
