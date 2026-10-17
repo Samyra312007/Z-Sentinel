@@ -127,6 +127,38 @@ function renderAlerts(alerts) {
   `).join("");
 }
 
+function renderFairness(fairness) {
+  const groups = Object.entries(fairness?.groups || {});
+  const note = $("#fairness-note");
+  if (!groups.length) {
+    $("#fairness").innerHTML = '<p class="muted">No grouped observations in this window.</p>';
+    note.textContent = "";
+    return;
+  }
+  const rows = groups.map(([name, metrics]) => `
+    <tr>
+      <td>${escapeHtml(name)}</td>
+      <td class="num">${metrics.volume}</td>
+      <td class="num">${rate(metrics.elevated_rate)}</td>
+      <td class="num ${(metrics.capture_rate ?? 0) < 0.6 ? "rate-bad" : ""}">${rate(metrics.capture_rate)}</td>
+      <td class="num ${(metrics.false_positive_rate ?? 0) > 0.02 ? "rate-bad" : ""}">${rate(metrics.false_positive_rate)}</td>
+    </tr>
+  `).join("");
+  $("#fairness").innerHTML = `
+    <table>
+      <thead><tr><th>Group</th><th class="num">Volume</th><th class="num">Elevated</th><th class="num">Capture</th><th class="num">False pos</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>`;
+  const gaps = [];
+  if (fairness.false_positive_rate_gap !== null && fairness.false_positive_rate_gap !== undefined) {
+    gaps.push(`FPR gap ${rate(fairness.false_positive_rate_gap)}`);
+  }
+  if (fairness.capture_rate_gap !== null && fairness.capture_rate_gap !== undefined) {
+    gaps.push(`capture gap ${rate(fairness.capture_rate_gap)}`);
+  }
+  note.textContent = gaps.length ? gaps.join(" · ") : "rates comparable";
+}
+
 function renderMetrics(metrics) {
   const reviews = metrics.reviews || {};
   const labeling = metrics.labeling || {};
@@ -149,6 +181,7 @@ function renderMetrics(metrics) {
   $("#model-version").textContent = `model ${metrics.model_version || "—"}`;
   renderHistogram(metrics.score_histogram);
   renderAlerts(metrics.alerts || []);
+  renderFairness(metrics.fairness);
 }
 
 async function loadMetrics() {
@@ -206,9 +239,12 @@ async function loadQueue() {
 // -- case detail -----------------------------------------------------------
 
 function renderSignals(item) {
-  const signals = Array.isArray(item.signal_scores) && item.signal_scores.length
-    ? item.signal_scores
-    : (item.top_signals || []).map((label) => [label, 0]);
+  const explanations = Array.isArray(item.explanations) ? item.explanations : [];
+  const signals = explanations.length
+    ? explanations.map((entry) => [entry.label, entry.contribution])
+    : Array.isArray(item.signal_scores) && item.signal_scores.length
+      ? item.signal_scores
+      : (item.top_signals || []).map((label) => [label, 0]);
   if (!signals.length) return '<p class="muted">No contributing signals recorded.</p>';
   const max = Math.max(0.1, ...signals.map(([, value]) => Math.abs(Number(value) || 0)));
   return `<ul class="signal-list">${signals.map(([label, value]) => {
@@ -252,6 +288,7 @@ function caseFacts(item) {
     ["Recipient", item.recipient_id],
     ["Segment", item.segment],
     ["Model", item.model_version],
+    ["Explanation", item.explanation_method],
     ["Behavior", item.behavior_status],
     ["Ring flag", item.ring_flag ? "yes" : "no"],
     ["2FA enrolled", item.two_factor_enrolled ? "yes" : "no"],
@@ -283,6 +320,7 @@ function renderCase(item) {
         <span class="badge ${statusClass}">${escapeHtml(item.status)}</span>
         <span class="badge badge-risk ${Number(item.risk_score) >= 90 ? "hot" : ""}">${escapeHtml(item.action)}</span>
         <span class="badge">${escapeHtml(item.outcome)}</span>
+        ${item.block_confirmation_required ? '<span class="badge badge-risk hot">BLOCK PENDING CONFIRMATION</span>' : ""}
         ${item.degraded ? '<span class="badge">DEGRADED</span>' : ""}
       </div>
     </div>

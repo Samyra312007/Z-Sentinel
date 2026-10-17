@@ -39,6 +39,9 @@ class MonitorConfig:
     max_degraded_rate: float = 0.05
     max_fpr: float = 0.02
     min_capture: float = 0.60
+    min_group_labeled: int = 10
+    max_fpr_gap: float = 0.05
+    max_capture_gap: float = 0.10
     evaluate_every: int = 25
     alert_history: int = 200
 
@@ -59,6 +62,12 @@ class MonitorConfig:
             raise ValueError("max_degraded_rate must be in [0, 1]")
         if not 0.0 <= self.min_capture <= 1.0:
             raise ValueError("min_capture must be in [0, 1]")
+        if self.min_group_labeled < 1:
+            raise ValueError("min_group_labeled must be positive")
+        if not 0.0 <= self.max_fpr_gap <= 1.0:
+            raise ValueError("max_fpr_gap must be in [0, 1]")
+        if not 0.0 <= self.max_capture_gap <= 1.0:
+            raise ValueError("max_capture_gap must be in [0, 1]")
 
 
 @dataclass(frozen=True)
@@ -88,6 +97,7 @@ class _Observation:
     latency_ms: float
     degraded: bool
     label: bool | None = None
+    group: str | None = None
 
 
 class MetricsMonitor:
@@ -115,8 +125,14 @@ class MetricsMonitor:
 
     # -- ingestion ----------------------------------------------------------
 
-    def observe(self, result: Any, *, label: bool | None = None) -> None:
-        """Record one score result (evaluation labels are optional)."""
+    def observe(
+        self,
+        result: Any,
+        *,
+        label: bool | None = None,
+        group: str | None = None,
+    ) -> None:
+        """Record one score result (evaluation labels/groups are optional)."""
         txn_id = str(getattr(result, "txn_id", ""))
         observation = _Observation(
             txn_id=txn_id,
@@ -126,6 +142,7 @@ class MetricsMonitor:
             latency_ms=float(getattr(result, "latency_ms", 0.0)),
             degraded=bool(getattr(result, "degraded", False)),
             label=label,
+            group=str(group) if group is not None else None,
         )
         with self._lock:
             self._window.append(observation)
@@ -211,6 +228,9 @@ class MetricsMonitor:
                 if labeled_legit else None,
             },
             "baseline": baseline,
+            "fairness": _group_metrics(
+                observations, self.config.min_group_labeled
+            ),
             "alerts": alerts,
             "alert_count": len(alerts),
         }
@@ -315,6 +335,30 @@ class MetricsMonitor:
                         )
                     )
 
+            fairness = _group_metrics(observations, self.config.min_group_labeled)
+            fpr_gap = fairness["false_positive_rate_gap"]
+            if fpr_gap is not None and fpr_gap > self.config.max_fpr_gap:
+                alerts.append(
+                    _alert(
+                        "WARN", "fairness_fpr_gap",
+                        f"false-positive rate gap {fpr_gap:.1%} across "
+                        f"{fairness['fpr_groups']} groups exceeds "
+                        f"{self.config.max_fpr_gap:.1%}",
+                        round(fpr_gap, 4),
+                    )
+                )
+            capture_gap = fairness["capture_rate_gap"]
+            if capture_gap is not None and capture_gap > self.config.max_capture_gap:
+                alerts.append(
+                    _alert(
+                        "WARN", "fairness_capture_gap",
+                        f"capture-rate gap {capture_gap:.1%} across "
+                        f"{fairness['capture_groups']} groups exceeds "
+                        f"{self.config.max_capture_gap:.1%}",
+                        round(capture_gap, 4),
+                    )
+                )
+
         self._alerts = alerts
         current_codes = {alert.code for alert in alerts}
         for alert in alerts:
@@ -335,6 +379,63 @@ class MetricsMonitor:
             "elevated_rate": round(elevated / n, 4),
             "score_mean": round(sum(obs.risk_score for obs in baseline) / n, 2),
         }
+
+
+def _group_metrics(
+    observations: list[_Observation],
+    min_labeled: int,
+) -> dict[str, Any]:
+    """Per-group elevated, capture and false-positive rates (plan 5.2)."""
+    grouped: dict[str, list[_Observation]] = {}
+    for obs in observations:
+        if obs.group is None:
+            continue
+        grouped.setdefault(obs.group, []).append(obs)
+
+    groups: dict[str, dict[str, Any]] = {}
+    for name, rows in sorted(grouped.items()):
+        labeled_fraud = [row for row in rows if row.label is True]
+        labeled_legit = [row for row in rows if row.label is False]
+        elevated = sum(1 for row in rows if row.risk_score >= ELEVATED_RISK)
+        capture = (
+            sum(1 for row in labeled_fraud if row.risk_score >= ELEVATED_RISK)
+            / len(labeled_fraud)
+            if labeled_fraud else None
+        )
+        fpr = (
+            sum(1 for row in labeled_legit if row.risk_score >= ELEVATED_RISK)
+            / len(labeled_legit)
+            if labeled_legit else None
+        )
+        groups[name] = {
+            "volume": len(rows),
+            "elevated_rate": round(elevated / len(rows), 4) if rows else 0.0,
+            "labeled_fraud": len(labeled_fraud),
+            "labeled_legit": len(labeled_legit),
+            "capture_rate": round(capture, 4) if capture is not None else None,
+            "false_positive_rate": round(fpr, 4) if fpr is not None else None,
+        }
+
+    fpr_comparable = [
+        metrics["false_positive_rate"] for metrics in groups.values()
+        if metrics["labeled_legit"] >= min_labeled
+        and metrics["false_positive_rate"] is not None
+    ]
+    capture_comparable = [
+        metrics["capture_rate"] for metrics in groups.values()
+        if metrics["labeled_fraud"] >= min_labeled
+        and metrics["capture_rate"] is not None
+    ]
+    return {
+        "groups": groups,
+        "min_labeled": min_labeled,
+        "fpr_groups": len(fpr_comparable),
+        "capture_groups": len(capture_comparable),
+        "false_positive_rate_gap": round(max(fpr_comparable) - min(fpr_comparable), 4)
+        if len(fpr_comparable) >= 2 else None,
+        "capture_rate_gap": round(max(capture_comparable) - min(capture_comparable), 4)
+        if len(capture_comparable) >= 2 else None,
+    }
 
 
 def _alert(severity: str, code: str, message: str, value: float | None) -> Alert:

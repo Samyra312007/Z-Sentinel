@@ -138,6 +138,13 @@ main { max-width: 1540px; margin: 0 auto; padding: 1.25rem 1.5rem 3rem; }
 .alert-list li strong { font-size: .78rem; }
 .alert-list li span { color: var(--muted); font-size: .75rem; }
 
+.fairness-panel { margin-bottom: 1rem; }
+.fairness { padding: .2rem 1rem 1rem; overflow-x: auto; }
+.fairness table { width: 100%; border-collapse: collapse; font-size: .78rem; }
+.fairness th, .fairness td { text-align: left; padding: .45rem .5rem; border-bottom: 1px solid var(--line); white-space: nowrap; }
+.fairness th { color: var(--muted); font-size: .68rem; text-transform: uppercase; letter-spacing: .06em; }
+.fairness td.num { text-align: right; font-variant-numeric: tabular-nums; }
+.fairness .rate-bad { color: var(--danger); }
 .workspace { display: grid; grid-template-columns: 380px minmax(0, 1fr); gap: .75rem; align-items: start; }
 .queue-panel { position: sticky; top: 82px; max-height: calc(100vh - 100px); display: flex; flex-direction: column; }
 .filters { display: grid; grid-template-columns: 1.2fr 1fr; gap: .45rem; padding: 0 1rem .7rem; }
