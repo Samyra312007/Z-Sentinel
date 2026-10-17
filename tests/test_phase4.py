@@ -12,6 +12,8 @@ import tempfile
 import unittest
 from datetime import datetime, timezone
 from types import SimpleNamespace
+from urllib.error import HTTPError
+from urllib.request import Request, urlopen
 
 from fraud_detection.decision import (
     HOLD,
@@ -19,6 +21,7 @@ from fraud_detection.decision import (
     DecisionConfig,
     DecisionEngine,
 )
+from fraud_detection.dashboard import DashboardServer
 from fraud_detection.monitoring import MetricsMonitor, MonitorConfig
 from fraud_detection.reviews import (
     CLEARED,
@@ -417,6 +420,115 @@ class TestMonitoring(unittest.TestCase):
             MonitorConfig(window=0)
         with self.assertRaises(ValueError):
             MonitorConfig(max_fpr=2.0)
+
+
+class TestDashboard(unittest.TestCase):
+    def setUp(self):
+        self.store = ReviewStore()
+        self.store.add_case(make_case("T1", 90.0))
+        self.store.add_case(make_case("T2", 75.0, action=STEP_UP))
+        self.monitor = MetricsMonitor(
+            MonitorConfig(min_volume=1000, evaluate_every=1000)
+        )
+        self.monitor.observe(
+            SimpleNamespace(
+                txn_id="T1", risk_score=90.0, action=HOLD,
+                outcome="HELD_FOR_REVIEW", latency_ms=1.2, degraded=False,
+            )
+        )
+        self.server = DashboardServer(
+            self.store,
+            self.monitor,
+            config=DecisionConfig(),
+            model_version="test-model",
+            port=0,
+        )
+        self.url = self.server.start()
+
+    def tearDown(self):
+        self.server.stop()
+        self.store.close()
+
+    def _get(self, path: str):
+        with urlopen(self.url + path, timeout=5) as response:
+            return response.status, json.loads(response.read().decode())
+
+    def _post(self, path: str, payload: dict):
+        request = Request(
+            self.url + path,
+            data=json.dumps(payload).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urlopen(request, timeout=5) as response:
+            return response.status, json.loads(response.read().decode())
+
+    def test_ui_and_static_assets_are_served(self):
+        with urlopen(self.url + "/", timeout=5) as response:
+            html = response.read().decode()
+            self.assertIn("Sentinel Review", html)
+            self.assertIn("default-src 'self'", response.headers["Content-Security-Policy"])
+        with urlopen(self.url + "/static/dashboard.js", timeout=5) as response:
+            self.assertIn("javascript", response.headers["Content-Type"])
+
+    def test_health_and_config(self):
+        status, health = self._get("/api/health")
+        self.assertEqual(status, 200)
+        self.assertEqual(health["status"], "ok")
+        self.assertEqual(health["model_version"], "test-model")
+        _, config = self._get("/api/config")
+        self.assertIn("standard", config["thresholds"])
+
+    def test_queue_and_case_detail(self):
+        status, payload = self._get("/api/cases")
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["count"], 2)
+        self.assertEqual(payload["cases"][0]["case_id"], "T1")
+        _, case = self._get("/api/cases/T1")
+        self.assertEqual(case["features"]["amount"], 123.45)
+        self.assertEqual(case["actions"], [])
+        _, all_cases = self._get("/api/cases?status=all")
+        self.assertEqual(all_cases["count"], 2)
+
+    def test_investigator_action_updates_queue_audit_and_metrics(self):
+        status, payload = self._post(
+            "/api/cases/T1/actions",
+            {"action": "confirm_fraud", "investigator": "analyst-1", "note": "mule"},
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["case"]["status"], CONFIRMED_FRAUD)
+        self.assertEqual(payload["case"]["feedback_label"], 1)
+        self.assertEqual(len(payload["actions"]), 1)
+
+        _, actions = self._get("/api/cases/T1/actions")
+        self.assertEqual(len(actions["actions"]), 1)
+        self.assertEqual(actions["actions"][0]["investigator"], "analyst-1")
+
+        _, metrics = self._get("/api/metrics")
+        self.assertEqual(metrics["reviews"]["confirmed_fraud"], 1)
+        self.assertEqual(metrics["labeling"]["labeled_fraud"], 1)
+        self.assertEqual(metrics["labeling"]["capture_rate"], 1.0)
+        self.assertEqual(metrics["model_version"], "test-model")
+
+        _, feedback = self._get("/api/feedback")
+        self.assertEqual(feedback["count"], 1)
+        self.assertEqual(feedback["feedback"][0]["label"], 1)
+
+    def test_invalid_requests(self):
+        with self.assertRaises(HTTPError) as missing:
+            self._post("/api/cases/missing/actions",
+                       {"action": "clear_fp", "investigator": "a"})
+        self.assertEqual(missing.exception.code, 404)
+        missing.exception.close()
+        with self.assertRaises(HTTPError) as invalid:
+            self._post("/api/cases/T1/actions",
+                       {"action": "delete", "investigator": "a"})
+        self.assertEqual(invalid.exception.code, 400)
+        invalid.exception.close()
+        with self.assertRaises(HTTPError) as traversal:
+            urlopen(self.url + "/static/..%2fREADME.md", timeout=5)
+        self.assertEqual(traversal.exception.code, 404)
+        traversal.exception.close()
 
 
 if __name__ == "__main__":

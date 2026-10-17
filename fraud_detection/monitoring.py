@@ -136,15 +136,16 @@ class MetricsMonitor:
                 self._refresh_alerts()
 
     def record_feedback(self, txn_id: str, label: int | bool | None) -> None:
-        """Attach a review label to a transaction (and to the rolling window)."""
-        if label is None:
-            return
-        value = bool(label)
+        """Attach (or clear) a review label on a transaction in the window."""
+        key = str(txn_id)
         with self._lock:
-            self._labels[str(txn_id)] = value
+            if label is None:
+                self._labels.pop(key, None)
+            else:
+                self._labels[key] = bool(label)
             for observation in self._window:
-                if observation.txn_id == str(txn_id):
-                    observation.label = value
+                if observation.txn_id == key:
+                    observation.label = None if label is None else bool(label)
             self._refresh_alerts()
 
     # -- reporting ----------------------------------------------------------

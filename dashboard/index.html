@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Sentinel Review — Fraud Operations</title>
+  <link rel="stylesheet" href="/static/dashboard.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true">◆</span>
+      <div>
+        <h1>Sentinel Review</h1>
+        <p class="subtitle">Real-time payment fraud operations</p>
+      </div>
+    </div>
+    <div class="topbar-meta">
+      <span id="model-version" class="chip">model —</span>
+      <span id="health" class="chip chip-live"><span class="dot"></span> connecting</span>
+    </div>
+  </header>
+
+  <main>
+    <section id="alert-region" class="alerts" aria-live="polite" hidden></section>
+
+    <section class="metric-grid" aria-label="Operational metrics">
+      <article class="metric-card"><span class="metric-label">Open review</span><strong id="m-open">—</strong><small id="m-open-sub">cases waiting</small></article>
+      <article class="metric-card"><span class="metric-label">Confirmed fraud</span><strong id="m-confirmed">—</strong><small id="m-reviewed-sub">of reviewed</small></article>
+      <article class="metric-card"><span class="metric-label">Capture rate</span><strong id="m-capture">—</strong><small>labeled fraud elevated</small></article>
+      <article class="metric-card"><span class="metric-label">False positives</span><strong id="m-fpr">—</strong><small>labeled legit elevated</small></article>
+      <article class="metric-card"><span class="metric-label">Scoring p99</span><strong id="m-p99">—</strong><small id="m-p99-sub">target 50 ms</small></article>
+      <article class="metric-card"><span class="metric-label">Alerts</span><strong id="m-alerts">—</strong><small>active signals</small></article>
+    </section>
+
+    <section class="insight-row">
+      <article class="panel histogram-panel">
+        <div class="panel-head"><h2>Risk score distribution</h2><span id="window-label" class="muted"></span></div>
+        <div id="histogram" class="histogram" role="img" aria-label="Risk score histogram"></div>
+      </article>
+      <article class="panel alert-panel">
+        <div class="panel-head"><h2>Operational alerts</h2><span class="muted">rolling window</span></div>
+        <ul id="alert-list" class="alert-list"><li class="muted">No active alerts.</li></ul>
+      </article>
+    </section>
+
+    <section class="workspace">
+      <aside class="panel queue-panel" aria-label="Review queue">
+        <div class="panel-head">
+          <h2>Review queue</h2>
+          <span id="queue-count" class="muted"></span>
+        </div>
+        <div class="filters">
+          <label class="sr-only" for="status-filter">Status filter</label>
+          <select id="status-filter">
+            <option value="OPEN">Open</option>
+            <option value="NEED_INFO">Needs info</option>
+            <option value="CONFIRMED_FRAUD">Confirmed fraud</option>
+            <option value="CLEARED">Cleared</option>
+            <option value="all">All cases</option>
+          </select>
+          <label class="sr-only" for="sort-filter">Sort order</label>
+          <select id="sort-filter">
+            <option value="risk">Highest risk</option>
+            <option value="newest">Newest</option>
+            <option value="oldest">Oldest</option>
+          </select>
+        </div>
+        <ul id="queue" class="queue"></ul>
+      </aside>
+
+      <section id="detail" class="panel detail-panel" aria-live="polite">
+        <div class="empty-state">
+          <span class="empty-glyph" aria-hidden="true">◇</span>
+          <h2>Select a case</h2>
+          <p>Held payments and pending step-ups appear here with their model explanation and behavioral signals.</p>
+        </div>
+      </section>
+    </section>
+  </main>
+
+  <script src="/static/dashboard.js" defer></script>
+</body>
+</html>
