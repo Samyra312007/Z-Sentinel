@@ -11,6 +11,7 @@ import os
 import tempfile
 import unittest
 from datetime import datetime, timezone
+from types import SimpleNamespace
 
 from fraud_detection.decision import (
     HOLD,
@@ -18,6 +19,7 @@ from fraud_detection.decision import (
     DecisionConfig,
     DecisionEngine,
 )
+from fraud_detection.monitoring import MetricsMonitor, MonitorConfig
 from fraud_detection.reviews import (
     CLEARED,
     CONFIRMED_FRAUD,
@@ -311,6 +313,110 @@ class TestScoringReviewIntegration(unittest.TestCase):
         self.assertEqual(result.action, HOLD)
         self.assertFalse(result.review_queued)
         self.assertIn("queue unavailable", result.review_error or "")
+
+
+def result(
+    txn_id: str,
+    risk_score: float,
+    *,
+    action: str = "ALLOW",
+    latency_ms: float = 1.0,
+    degraded: bool = False,
+) -> SimpleNamespace:
+    return SimpleNamespace(
+        txn_id=txn_id,
+        risk_score=risk_score,
+        action=action,
+        outcome="COMMITTED",
+        latency_ms=latency_ms,
+        degraded=degraded,
+    )
+
+
+class TestMonitoring(unittest.TestCase):
+    def test_window_metrics_and_histogram(self):
+        monitor = MetricsMonitor(
+            MonitorConfig(window=10, baseline_size=10, min_volume=100)
+        )
+        for i in range(20):
+            monitor.observe(result(f"T{i}", float(i * 5), latency_ms=float(i)))
+        snapshot = monitor.snapshot()
+        self.assertEqual(snapshot["observed_total"], 20)
+        self.assertEqual(snapshot["window_size"], 10)
+        self.assertEqual(sum(snapshot["score_histogram"].values()), 10)
+        self.assertEqual(snapshot["latency_ms"]["p99"], 19.0)
+        self.assertIn("score_mean", snapshot)
+
+    def test_feedback_updates_capture_and_fpr(self):
+        monitor = MetricsMonitor(MonitorConfig(min_volume=1, evaluate_every=1000))
+        for i in range(4):
+            monitor.observe(result(f"F{i}", 90.0), label=True)
+        for i in range(4):
+            monitor.observe(result(f"L{i}", 90.0 if i < 2 else 10.0), label=False)
+        snapshot = monitor.snapshot()
+        self.assertEqual(snapshot["labeling"]["capture_rate"], 1.0)
+        self.assertEqual(snapshot["labeling"]["false_positive_rate"], 0.5)
+        self.assertIn(
+            "false_positive_rate", {alert["code"] for alert in snapshot["alerts"]}
+        )
+
+    def test_feedback_can_arrive_after_scoring(self):
+        monitor = MetricsMonitor(MonitorConfig(min_volume=1, evaluate_every=1000))
+        monitor.observe(result("T1", 90.0))
+        monitor.record_feedback("T1", 1)
+        snapshot = monitor.snapshot()
+        self.assertEqual(snapshot["labeling"]["labeled_fraud"], 1)
+        self.assertEqual(snapshot["labeling"]["capture_rate"], 1.0)
+
+    def test_detection_rate_drift_alert(self):
+        monitor = MetricsMonitor(
+            MonitorConfig(
+                window=20, baseline_size=20, min_volume=10,
+                drift_threshold=0.15, score_shift_threshold=100.0,
+                evaluate_every=1000,
+            )
+        )
+        for i in range(20):
+            monitor.observe(result(f"B{i}", 10.0))
+        for i in range(20):
+            monitor.observe(result(f"D{i}", 95.0))
+        codes = {alert["code"] for alert in monitor.snapshot()["alerts"]}
+        self.assertIn("detection_rate_drift", codes)
+
+    def test_latency_and_degraded_alerts(self):
+        monitor = MetricsMonitor(
+            MonitorConfig(
+                min_volume=5, latency_target_ms=5.0,
+                max_degraded_rate=0.01, evaluate_every=1000,
+            )
+        )
+        for i in range(10):
+            monitor.observe(result(f"T{i}", 10.0, latency_ms=10.0, degraded=True))
+        codes = {alert["code"] for alert in monitor.snapshot()["alerts"]}
+        self.assertIn("latency_p99", codes)
+        self.assertIn("degraded_rate", codes)
+
+    def test_alert_sink_emits_once_per_active_code(self):
+        emitted = []
+        monitor = MetricsMonitor(
+            MonitorConfig(
+                min_volume=5, latency_target_ms=1.0, evaluate_every=1,
+            ),
+            alert_sink=emitted.append,
+        )
+        for i in range(8):
+            monitor.observe(result(f"T{i}", 10.0, latency_ms=10.0))
+        self.assertTrue(emitted)
+        self.assertEqual(
+            len(monitor.alert_history()),
+            len({alert.code for alert in emitted}),
+        )
+
+    def test_invalid_config_rejected(self):
+        with self.assertRaises(ValueError):
+            MonitorConfig(window=0)
+        with self.assertRaises(ValueError):
+            MonitorConfig(max_fpr=2.0)
 
 
 if __name__ == "__main__":
