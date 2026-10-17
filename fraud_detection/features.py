@@ -146,3 +146,94 @@ class FeatureEngine:
         st.devices_seen.add(txn.device_id)
         st.recipients_seen.add(txn.recipient_id)
         st.account_age_days = txn.account_age_days
+
+
+# ---------------------------------------------------------------------------
+# Model vectorisation (shared by the offline trainer and the scoring path, so
+# there is exactly one feature definition — plan 6.1 parity requirement)
+# ---------------------------------------------------------------------------
+
+CHANNEL_VALUES = ("card_pos", "card_web", "mobile", "transfer")
+MERCHANT_VALUES = (
+    "grocery", "restaurant", "fuel", "retail", "travel",
+    "electronics", "wire_transfer", "gambling", "crypto", "subscription",
+)
+BOOLEAN_FEATURES = (
+    "device_change_flag",
+    "first_seen_device_flag",
+    "new_recipient_flag",
+    "impossible_travel_flag",
+    "is_odd_hours_flag",
+    "behavior_missing_flag",
+)
+NUMERIC_FEATURES = (
+    "amount",
+    "amount_dev_30d_z",
+    "avg_amount_30d",
+    "time_since_last_txn_s",
+    "txn_count_1h",
+    "txn_count_24h",
+    "same_recipient_1h",
+    "loc_distance_last_km",
+    "account_age_days",
+    "hour_of_day",
+    "behavior_anomaly_score",
+    "behavior_max_channel_z",
+)
+
+
+def vectorize(features: dict) -> dict[str, float]:
+    """Flatten the feature dict to a stable numeric vector (dict form)."""
+    out: dict[str, float] = {}
+    for name in NUMERIC_FEATURES:
+        out[name] = float(features.get(name, 0.0) or 0.0)
+    for name in BOOLEAN_FEATURES:
+        out[name] = 1.0 if features.get(name) else 0.0
+    channel = str(features.get("channel", ""))
+    for c in CHANNEL_VALUES:
+        out[f"channel_{c}"] = 1.0 if channel == c else 0.0
+    mcc = str(features.get("merchant_category", ""))
+    for m in MERCHANT_VALUES:
+        out[f"mcc_{m}"] = 1.0 if mcc == m else 0.0
+    return out
+
+
+def as_row(features: dict, order: list[str]) -> list[float]:
+    """Vectorise and order by the trained model's feature order."""
+    vec = vectorize(features)
+    return [vec.get(name, 0.0) for name in order]
+
+
+# Human-readable labels for the top-signal explanations (plan 5.2)
+SIGNAL_LABELS: dict[str, str] = {
+    "amount": "payment amount",
+    "amount_dev_30d_z": "amount vs. user's 30-day history",
+    "avg_amount_30d": "user's average payment",
+    "time_since_last_txn_s": "time since previous payment",
+    "txn_count_1h": "payments in the last hour",
+    "txn_count_24h": "payments in the last 24h",
+    "same_recipient_1h": "repeat payments to same recipient",
+    "loc_distance_last_km": "distance from previous payment",
+    "account_age_days": "account age",
+    "hour_of_day": "time of day",
+    "behavior_anomaly_score": "typing / mouse behavior anomaly",
+    "behavior_max_channel_z": "strongest biometric deviation",
+    "device_change_flag": "device changed",
+    "first_seen_device_flag": "unrecognized device",
+    "new_recipient_flag": "new recipient",
+    "impossible_travel_flag": "impossible travel",
+    "is_odd_hours_flag": "unusual hour",
+    "behavior_missing_flag": "no behavioral sample",
+    "channel_card_pos": "channel: card present",
+    "channel_card_web": "channel: card online",
+    "channel_mobile": "channel: mobile",
+    "channel_transfer": "channel: transfer",
+}
+
+
+def label_for(feature_name: str) -> str:
+    if feature_name in SIGNAL_LABELS:
+        return SIGNAL_LABELS[feature_name]
+    if feature_name.startswith("mcc_"):
+        return f"merchant category: {feature_name[4:]}"
+    return feature_name.replace("_", " ")

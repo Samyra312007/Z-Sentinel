@@ -215,10 +215,28 @@ class TransactionSimulator:
         rng = self.rng
         user = rng.choice(self.world.users)
         amount = min(9000.0, rng.lognormvariate(math.log(user.amount_mean), user.amount_sigma))
-        geo = (
-            user.home_geo[0] + rng.gauss(0, 0.15),
-            user.home_geo[1] + rng.gauss(0, 0.15),
-        )
+        if rng.random() < 0.05:  # occasional large legitimate purchase
+            amount = min(9000.0, amount * rng.uniform(3.0, 7.0))
+
+        # legitimate novelty: new recipients / devices / travel all happen
+        if rng.random() < 0.08:
+            recipient = f"rcpt-{user.user_id}-new-{rng.randint(1000, 9999)}"
+            user.recipients.append(recipient)  # established after first payment
+        else:
+            recipient = rng.choice(user.recipients)
+        if rng.random() < 0.03:
+            device = f"dev-{user.user_id}-new-{rng.randint(1, 999)}"
+            user.devices.append(device)
+        else:
+            device = rng.choice(user.devices)
+        if rng.random() < 0.03:  # the user is travelling this week
+            zone = rng.choice(list(GEO_ZONES.values()))
+            geo = (zone[0] + rng.gauss(0, 0.2), zone[1] + rng.gauss(0, 0.2))
+        else:
+            geo = (
+                user.home_geo[0] + rng.gauss(0, 0.15),
+                user.home_geo[1] + rng.gauss(0, 0.15),
+            )
         return Transaction(
             txn_id=f"TXN{next(self._ids):07d}",
             user_id=user.user_id,
@@ -227,8 +245,8 @@ class TransactionSimulator:
             currency="USD",
             channel=rng.choice(CHANNELS),
             merchant_category=rng.choice(MERCHANT_CATEGORIES[:-3]),
-            recipient_id=rng.choice(user.recipients),
-            device_id=rng.choice(user.devices),
+            recipient_id=recipient,
+            device_id=device,
             ip_address=f"203.0.113.{rng.randint(1, 254)}",
             geo=(round(geo[0], 4), round(geo[1], 4)),
             account_age_days=user.account_age_days,
@@ -245,7 +263,7 @@ class TransactionSimulator:
             user = self._card_testing_user
             recipient = self._card_testing_recipient
             self._card_testing_left -= 1
-            amount = round(rng.uniform(0.5, 4.0), 2)
+            amount = round(rng.uniform(0.5, 15.0), 2)
             device = rng.choice(user.devices)  # stolen card, device may look usual
             behavior = self._sample_behavior(user, stressed=False)
             geo = (user.home_geo[0] + 0.02, user.home_geo[1] + 0.02)
@@ -253,7 +271,9 @@ class TransactionSimulator:
         elif strategy == "account_takeover":
             user = rng.choice(self.world.users)
             recipient = rng.choice(self.world.fraud_recipients)
-            amount = round(rng.lognormvariate(math.log(user.amount_mean * 6.0), 0.6), 2)
+            amount = round(rng.lognormvariate(math.log(user.amount_mean * 2.2), 0.7), 2)
+            if rng.random() < 0.3:  # high-value takeovers overlap normal spend
+                amount = round(amount * rng.uniform(2.0, 4.0), 2)
             device = f"dev-{user.user_id}-attacker-{rng.randint(1, 9)}"  # new device
             behavior = self._sample_behavior(user, stressed=True)
             far = rng.choice([z for z in GEO_ZONES.values() if _haversine_km(user.home_geo, z) > 800])
@@ -262,7 +282,7 @@ class TransactionSimulator:
         else:  # fraud_ring: distinct users -> shared mule recipient
             user = rng.choice(self.world.users)
             recipient = rng.choice(self.world.mule_recipients)
-            amount = round(rng.uniform(800.0, 4200.0), 2)
+            amount = round(rng.uniform(150.0, 2000.0), 2)
             device = rng.choice(user.devices)
             behavior = self._sample_behavior(user, stressed=False)
             geo = (user.home_geo[0] + rng.gauss(0, 0.1), user.home_geo[1] + rng.gauss(0, 0.1))

@@ -155,8 +155,25 @@ class DecisionEngine:
         signals.sort(key=lambda kv: -abs(kv[1]))
         top = [name for name, _ in signals[:3]] or ["no_risk_signals"]
 
-        segment = resolve_segment(float(features.get("amount", txn.amount)),
-                                  txn.account_age_days)
+        result = self.decide(txn, score, behavior_score, top)
+        result["ring_boost"] = ring_boost
+        return result
+
+    # -- business rules on top of any 0-100 risk score ----------------------
+
+    def decide(
+        self,
+        txn: Transaction,
+        risk_score: float,
+        behavior_score: float = 0.0,
+        top_signals: list[str] | None = None,
+    ) -> dict:
+        """Apply the plan's threshold policy to a model or rules risk score.
+
+        Used by both paths: rules-only fallback and the Phase 2 ensemble.
+        """
+        score = round(float(risk_score), 2)
+        segment = resolve_segment(txn.amount, txn.account_age_days)
         t = self.config.thresholds[segment]
         if score >= t["block"]:
             action = BLOCK
@@ -176,7 +193,6 @@ class DecisionEngine:
         return {
             "risk_score": score,
             "action": action,
-            "top_signals": top,
+            "top_signals": top_signals or [],
             "segment": segment,
-            "ring_boost": ring_boost,
         }
