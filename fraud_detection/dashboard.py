@@ -8,17 +8,20 @@ A dependency-free HTTP API plus a small browser UI for fraud analysts:
 * `POST /api/cases/{id}/actions`    confirm fraud / clear / request info / reopen
 * `GET  /api/metrics`               monitoring snapshot, review stats and alerts
 * `GET  /api/config`                active segment thresholds
-* `GET  /api/feedback`              labeled rows for retraining
+* `GET  /api/feedback`              labeled rows for retraining (admin)
+* `GET  /api/whoami`                authenticated principal and role
 * `GET  /api/health`
 
-The server is deliberately unauthenticated: in production it must sit behind
-z/OS Connect / RACF or an equivalent authenticated reverse proxy (plan 5.1).
+An `AccessPolicy` can require bearer tokens and role scopes (plan 5.1); TLS
+is supplied through an `ssl.SSLContext`. Without a policy the server keeps the
+Phase 4 localhost-only behaviour.
 """
 
 from __future__ import annotations
 
 import json
 import mimetypes
+import ssl
 import threading
 from dataclasses import dataclass
 from http import HTTPStatus
@@ -27,6 +30,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, unquote, urlsplit
 
+from fraud_detection.access import AccessPolicy, Principal
 from fraud_detection.decision import DecisionConfig
 from fraud_detection.monitoring import MetricsMonitor
 from fraud_detection.reviews import ReviewStore
@@ -42,6 +46,7 @@ class DashboardContext:
     config: DecisionConfig
     model_version: str = "rules-only"
     static_dir: Path = _STATIC_DIR
+    access: AccessPolicy | None = None
 
     def metrics(self) -> dict[str, Any]:
         snapshot = self.monitor.snapshot()
@@ -64,6 +69,8 @@ class DashboardServer:
         host: str = "127.0.0.1",
         port: int = 8080,
         static_dir: Path | None = None,
+        access: AccessPolicy | None = None,
+        tls_context: ssl.SSLContext | None = None,
     ) -> None:
         self.context = DashboardContext(
             reviews=reviews,
@@ -71,22 +78,29 @@ class DashboardServer:
             config=config or DecisionConfig(),
             model_version=model_version,
             static_dir=static_dir or _STATIC_DIR,
+            access=access,
         )
         self.host = host
         self.port = port
+        self.tls_context = tls_context
         self._httpd: ThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None
 
     @property
     def url(self) -> str:
+        scheme = "https" if self.tls_context is not None else "http"
         if self._httpd is None:
-            return f"http://{self.host}:{self.port}"
+            return f"{scheme}://{self.host}:{self.port}"
         host, port = self._httpd.server_address[:2]
-        return f"http://{host}:{port}"
+        return f"{scheme}://{host}:{port}"
 
     def start(self) -> str:
         handler = _make_handler(self.context)
         self._httpd = _ThreadingServer((self.host, self.port), handler)
+        if self.tls_context is not None:
+            self._httpd.socket = self.tls_context.wrap_socket(
+                self._httpd.socket, server_side=True
+            )
         self._thread = threading.Thread(
             target=self._httpd.serve_forever,
             name="fraud-dashboard",
@@ -121,8 +135,32 @@ def _make_handler(context: DashboardContext):
     class Handler(BaseHTTPRequestHandler):
         server_version = "FraudDashboard/1.0"
 
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            self.principal: Principal | None = None
+            super().__init__(*args, **kwargs)
+
         def log_message(self, format: str, *args: Any) -> None:  # noqa: A002
             return
+
+        def _authorize(self, scope: str) -> bool:
+            if context.access is None or not context.access.enabled:
+                return True
+            principal = context.access.authenticate(self.headers.get("Authorization"))
+            if principal is None:
+                self._json(
+                    HTTPStatus.UNAUTHORIZED,
+                    {"error": "bearer token required"},
+                    extra={"WWW-Authenticate": 'Bearer realm="fraud-dashboard"'},
+                )
+                return False
+            if not context.access.authorize(principal, scope):
+                self._json(
+                    HTTPStatus.FORBIDDEN,
+                    {"error": f"role {principal.role!r} lacks {scope!r} scope"},
+                )
+                return False
+            self.principal = principal
+            return True
 
         # -- routing --------------------------------------------------------
 
@@ -133,27 +171,37 @@ def _make_handler(context: DashboardContext):
                     self._static("index.html", "text/html; charset=utf-8")
                 elif path.startswith("/static/"):
                     self._static(path[len("/static/"):])
+                elif path == "/api/whoami":
+                    if self._authorize("read"):
+                        principal = self.principal
+                        self._json(HTTPStatus.OK, principal.to_dict() if principal else {})
                 elif path == "/api/health":
-                    self._json(
-                        HTTPStatus.OK,
-                        {
-                            "status": "ok",
-                            "reviews": context.reviews.stats(),
-                            "monitoring": context.monitor.snapshot()["observed_total"],
-                            "model_version": context.model_version,
-                        },
-                    )
+                    if self._authorize("read"):
+                        self._json(
+                            HTTPStatus.OK,
+                            {
+                                "status": "ok",
+                                "reviews": context.reviews.stats(),
+                                "monitoring": context.monitor.snapshot()["observed_total"],
+                                "model_version": context.model_version,
+                            },
+                        )
                 elif path == "/api/cases":
-                    self._list_cases()
+                    if self._authorize("read"):
+                        self._list_cases()
                 elif path == "/api/metrics":
-                    self._json(HTTPStatus.OK, context.metrics())
+                    if self._authorize("read"):
+                        self._json(HTTPStatus.OK, context.metrics())
                 elif path == "/api/config":
-                    self._json(HTTPStatus.OK, context.config.to_dict())
+                    if self._authorize("read"):
+                        self._json(HTTPStatus.OK, context.config.to_dict())
                 elif path == "/api/feedback":
-                    rows = context.reviews.feedback()
-                    self._json(HTTPStatus.OK, {"feedback": rows, "count": len(rows)})
+                    if self._authorize("admin"):
+                        rows = context.reviews.feedback()
+                        self._json(HTTPStatus.OK, {"feedback": rows, "count": len(rows)})
                 elif path.startswith("/api/cases/"):
-                    self._case_route(path)
+                    if self._authorize("read"):
+                        self._case_route(path)
                 elif path.startswith("/api/"):
                     self._json(HTTPStatus.NOT_FOUND, {"error": "unknown endpoint"})
                 else:
@@ -174,6 +222,8 @@ def _make_handler(context: DashboardContext):
                 self._json(HTTPStatus.NOT_FOUND, {"error": "unknown endpoint"})
                 return
             case_id = unquote(path[len("/api/cases/"):-len("/actions")].strip("/"))
+            if not self._authorize("review"):
+                return
             try:
                 payload = self._read_json()
                 action = str(payload.get("action", ""))
@@ -199,13 +249,20 @@ def _make_handler(context: DashboardContext):
 
         # -- response helpers ----------------------------------------------
 
-        def _json(self, status: HTTPStatus, payload: dict[str, Any]) -> None:
+        def _json(
+            self,
+            status: HTTPStatus,
+            payload: dict[str, Any],
+            extra: dict[str, str] | None = None,
+        ) -> None:
             body = json.dumps(payload, separators=(",", ":"), default=str).encode()
             self.send_response(status)
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
             self.send_header("Cache-Control", "no-store")
             self.send_header("X-Content-Type-Options", "nosniff")
+            for name, value in (extra or {}).items():
+                self.send_header(name, value)
             self.end_headers()
             self.wfile.write(body)
 

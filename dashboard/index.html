@@ -18,8 +18,23 @@
     <div class="topbar-meta">
       <span id="model-version" class="chip">model —</span>
       <span id="health" class="chip chip-live"><span class="dot"></span> connecting</span>
+      <button id="auth-open" class="chip chip-button" type="button">access</button>
     </div>
   </header>
+
+  <section id="auth-gate" class="auth-gate" hidden aria-label="Dashboard sign in">
+    <form id="auth-form" class="auth-card">
+      <h2>Dashboard access</h2>
+      <p class="muted">Enter a bearer token issued for the operations roles.</p>
+      <label for="auth-token">Access token</label>
+      <input id="auth-token" type="password" autocomplete="off" spellcheck="false">
+      <div class="actions">
+        <button class="btn btn-primary" type="submit">Sign in</button>
+        <button class="btn btn-ghost" type="button" id="auth-cancel">Cancel</button>
+      </div>
+      <div id="auth-status" class="status-line" role="status"></div>
+    </form>
+  </section>
 
   <main>
     <section id="alert-region" class="alerts" aria-live="polite" hidden></section>

@@ -23,6 +23,7 @@ import hmac
 import json
 import os
 import secrets
+import ssl
 import threading
 from dataclasses import dataclass
 from typing import Any
@@ -242,6 +243,23 @@ class SecureAuditLog:
         if count == 0:
             return AuditVerification(True, 0, GENESIS_HASH)
         return AuditVerification(True, count, expected_prev)
+
+
+def build_server_ssl_context(
+    certfile: str,
+    keyfile: str,
+    *,
+    minimum_version: ssl.TLSVersion = ssl.TLSVersion.TLSv1_2,
+) -> ssl.SSLContext:
+    """Build a TLS 1.2+ server context for the dashboard.
+
+    Certificate/key material should come from the z/OS keyring or a mounted
+    secret, not from the repository.
+    """
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    context.minimum_version = minimum_version
+    context.load_cert_chain(certfile=certfile, keyfile=keyfile)
+    return context
 
 
 def _entry_payload(seq: int, prev_hash: str, entry: dict[str, Any]) -> bytes:

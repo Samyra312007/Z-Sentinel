@@ -64,6 +64,19 @@ button { cursor: pointer; }
   background: var(--bg-raised);
 }
 .chip-live { color: var(--ok); }
+.chip-button { cursor: pointer; }
+.chip-button:hover { border-color: var(--accent); color: var(--accent); }
+.auth-gate {
+  position: fixed; inset: 0; z-index: 40; display: grid; place-items: center;
+  background: rgba(5, 10, 14, .72); backdrop-filter: blur(4px); padding: 1.5rem;
+}
+.auth-card {
+  width: min(420px, 100%); display: grid; gap: .6rem; padding: 1.4rem;
+  border: 1px solid var(--line-strong); border-radius: var(--radius);
+  background: var(--bg-raised); box-shadow: var(--shadow);
+}
+.auth-card label { color: var(--muted); font-size: .72rem; }
+.auth-card h2 { margin-bottom: .1rem; }
 .dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; box-shadow: 0 0 8px currentColor; }
 
 main { max-width: 1540px; margin: 0 auto; padding: 1.25rem 1.5rem 3rem; }

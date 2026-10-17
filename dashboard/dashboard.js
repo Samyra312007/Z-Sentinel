@@ -8,6 +8,8 @@ const state = {
   busy: false,
 };
 
+let authToken = localStorage.getItem("fraudDashboardToken") || "";
+
 const $ = (selector) => document.querySelector(selector);
 
 function escapeHtml(value) {
@@ -42,10 +44,9 @@ function amount(value, currency = "USD") {
 }
 
 async function api(path, options = {}) {
-  const response = await fetch(path, {
-    headers: { "Content-Type": "application/json", ...(options.headers || {}) },
-    ...options,
-  });
+  const headers = { "Content-Type": "application/json", ...(options.headers || {}) };
+  if (authToken) headers.Authorization = `Bearer ${authToken}`;
+  const response = await fetch(path, { headers, ...options });
   let payload = {};
   try {
     payload = await response.json();
@@ -53,9 +54,39 @@ async function api(path, options = {}) {
     payload = { error: `HTTP ${response.status}` };
   }
   if (!response.ok) {
-    throw new Error(payload.error || `HTTP ${response.status}`);
+    const error = new Error(payload.error || `HTTP ${response.status}`);
+    error.status = response.status;
+    if (response.status === 401) showAuthGate("Sign in to continue.");
+    throw error;
   }
   return payload;
+}
+
+function showAuthGate(message = "") {
+  const gate = $("#auth-gate");
+  gate.hidden = false;
+  $("#auth-status").textContent = message;
+  $("#auth-status").className = "status-line";
+  $("#auth-token")?.focus();
+}
+
+function hideAuthGate() {
+  $("#auth-gate").hidden = true;
+}
+
+function saveToken(token) {
+  authToken = token.trim();
+  if (authToken) localStorage.setItem("fraudDashboardToken", authToken);
+  else localStorage.removeItem("fraudDashboardToken");
+}
+
+async function loadIdentity() {
+  try {
+    const who = await api("/api/whoami");
+    $("#auth-open").textContent = who.name ? `${who.name} · ${who.role}` : "access";
+  } catch (error) {
+    if (error.status !== 401) $("#auth-open").textContent = "access";
+  }
 }
 
 // -- metrics ---------------------------------------------------------------
@@ -335,7 +366,12 @@ async function submitAction(action) {
     setStatus(`Recorded: ${action.replace(/_/g, " ")}.`);
     await Promise.all([loadQueue(), loadMetrics()]);
   } catch (error) {
-    setStatus(error.message, true);
+    setStatus(
+      error.status === 403
+        ? "Your role does not permit case dispositions."
+        : error.message,
+      true,
+    );
   } finally {
     state.busy = false;
     document.querySelectorAll("[data-action]").forEach((button) => { button.disabled = false; });
@@ -383,7 +419,32 @@ async function loadHealth() {
   }
 }
 
+$("#auth-open").addEventListener("click", () => showAuthGate());
+$("#auth-cancel").addEventListener("click", hideAuthGate);
+$("#auth-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const token = $("#auth-token").value.trim();
+  if (!token) {
+    $("#auth-status").textContent = "A token is required.";
+    $("#auth-status").className = "status-line error";
+    return;
+  }
+  saveToken(token);
+  $("#auth-status").textContent = "Verifying…";
+  try {
+    await api("/api/whoami");
+    hideAuthGate();
+    await Promise.all([loadHealth(), loadIdentity(), loadMetrics(), loadQueue()]);
+    const deepLink = new URLSearchParams(location.search).get("case");
+    if (deepLink) selectCase(deepLink);
+  } catch (error) {
+    $("#auth-status").textContent = error.message;
+    $("#auth-status").className = "status-line error";
+  }
+});
+
 const deepLinkCase = new URLSearchParams(location.search).get("case");
+loadIdentity();
 loadHealth();
 loadMetrics();
 loadQueue();
