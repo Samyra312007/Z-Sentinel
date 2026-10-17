@@ -301,6 +301,39 @@ class ReviewStore:
             raise RuntimeError(f"case {case_id} disappeared")
         return updated
 
+    # -- retention ----------------------------------------------------------
+
+    def purge_closed_before(self, cutoff: str) -> dict[str, int]:
+        """Delete closed cases (and their action history) older than cutoff.
+
+        Open and `NEED_INFO` cases are retained because they still require an
+        investigator decision. Behavioral raw input is never stored here; the
+        payload contains only aggregate features and evidence.
+        """
+        with self._lock:
+            rows = self._conn.execute(
+                """
+                SELECT case_id FROM cases
+                 WHERE status IN (?, ?) AND created_at < ?
+                """,
+                (CONFIRMED_FRAUD, CLEARED, cutoff),
+            ).fetchall()
+            case_ids = [row["case_id"] for row in rows]
+            actions = 0
+            for start in range(0, len(case_ids), 500):
+                batch = case_ids[start:start + 500]
+                placeholders = ",".join("?" for _ in batch)
+                actions += self._conn.execute(
+                    f"DELETE FROM case_actions WHERE case_id IN ({placeholders})",
+                    batch,
+                ).rowcount
+                self._conn.execute(
+                    f"DELETE FROM cases WHERE case_id IN ({placeholders})",
+                    batch,
+                )
+            self._conn.commit()
+        return {"cases": len(case_ids), "actions": actions}
+
     # -- reporting / retraining export -------------------------------------
 
     def stats(self) -> dict[str, Any]:

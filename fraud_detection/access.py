@@ -121,9 +121,11 @@ class AccessPolicy:
                 for token, name, role in tokens
             ]
         }
-        with open(path, "w", encoding="utf-8") as fh:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
             json.dump(payload, fh, indent=2, sort_keys=True)
             fh.write("\n")
+        os.chmod(path, 0o600)
 
 
 def _hash_token(token: str) -> str:
@@ -137,6 +139,7 @@ def load_or_create_tokens(path: str) -> tuple[AccessPolicy, dict[str, str]]:
     just created, so the caller can display the demo credentials once.
     """
     if os.path.exists(path):
+        os.chmod(path, 0o600)
         return AccessPolicy.load(path), {}
     import secrets
 
