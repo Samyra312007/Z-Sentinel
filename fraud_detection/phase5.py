@@ -215,7 +215,12 @@ def _request_json(url: str, token: str | None = None) -> tuple[int, dict[str, An
         return response.status, json.loads(response.read().decode("utf-8"))
 
 
-def _probe(url: str, token: str) -> dict[str, Any]:
+def _probe(
+    url: str,
+    token: str,
+    *,
+    include_models: bool = True,
+) -> dict[str, Any]:
     """Verify auth is enforced and the governance/fairness APIs are live."""
     auth_required = False
     try:
@@ -224,7 +229,9 @@ def _probe(url: str, token: str) -> dict[str, Any]:
         auth_required = exc.code == 401
         exc.close()
     _, health = _request_json(url + "/api/health", token)
-    _, models = _request_json(url + "/api/models", token)
+    models: dict[str, Any] = {}
+    if include_models:
+        _, models = _request_json(url + "/api/models", token)
     _, metrics = _request_json(url + "/api/metrics", token)
     return {
         "auth_required": auth_required,
@@ -378,7 +385,9 @@ def main(argv: list[str] | None = None) -> int:
             if args.check:
                 try:
                     token = _first_token(args.tokens)
-                    probe = _probe(url, token)
+                    probe = _probe(
+                        url, token, include_models=args.model is not None
+                    )
                     explanations_ok, detailed = _case_explanations(url, token)
                     checks["auth_required"] = probe["auth_required"]
                     checks["governance_api"] = (
