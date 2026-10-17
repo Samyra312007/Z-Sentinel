@@ -15,14 +15,27 @@ import stat
 import subprocess
 import tempfile
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 from fraud_detection.access import ADMIN, INVESTIGATOR, VIEWER, AccessPolicy
 from fraud_detection.dashboard import DashboardServer
+from fraud_detection.decision import BLOCK, HOLD, DecisionConfig, DecisionEngine
+from fraud_detection.ensemble import EnsembleScorer
+from fraud_detection.governance import (
+    ACTIVE,
+    APPROVED,
+    CANDIDATE,
+    ModelRegistry,
+)
+from fraud_detection.model import FraudModel
 from fraud_detection.monitoring import MetricsMonitor, MonitorConfig
-from fraud_detection.reviews import ReviewStore
+from fraud_detection.privacy import RetentionPolicy
+from fraud_detection.reviews import CONFIRMED_FRAUD, OPEN, ReviewStore
+from fraud_detection.service import AuditLog, ScoringService
+from fraud_detection.simulator import Transaction
 from fraud_detection.security import (
     AuditIntegrityError,
     SecureAuditLog,
@@ -179,6 +192,7 @@ class TestAccessPolicy(unittest.TestCase):
         path = tempfile.mktemp(suffix=".json")
         try:
             AccessPolicy.save(path, (("t", "n", VIEWER),))
+            self.assertEqual(stat.S_IMODE(os.stat(path).st_mode), 0o600)
             policy = AccessPolicy.load(path)
             self.assertTrue(policy.enabled)
             self.assertEqual(policy.authenticate("Bearer t").role, VIEWER)
@@ -296,6 +310,383 @@ class TestDashboardTLS(unittest.TestCase):
             server.stop()
             store.close()
             shutil.rmtree(directory, ignore_errors=True)
+
+
+def metric_result(txn_id: str, risk_score: float, *, action: str = "ALLOW") -> SimpleNamespace:
+    return SimpleNamespace(
+        txn_id=txn_id,
+        risk_score=risk_score,
+        action=action,
+        outcome="COMMITTED",
+        latency_ms=1.0,
+        degraded=False,
+    )
+
+
+class TestFairnessMonitoring(unittest.TestCase):
+    def _monitor(self) -> MetricsMonitor:
+        return MetricsMonitor(
+            MonitorConfig(
+                min_volume=1,
+                min_group_labeled=5,
+                max_fpr_gap=0.05,
+                max_capture_gap=0.10,
+                evaluate_every=1000,
+            )
+        )
+
+    def test_group_rates_are_reported(self):
+        monitor = self._monitor()
+        for i in range(5):
+            monitor.observe(
+                metric_result(f"A{i}", 90.0), label=True, group="card_web"
+            )
+        for i in range(5):
+            monitor.observe(
+                metric_result(f"B{i}", 10.0), label=False, group="transfer"
+            )
+        fairness = monitor.snapshot()["fairness"]
+        self.assertEqual(fairness["groups"]["card_web"]["capture_rate"], 1.0)
+        self.assertEqual(fairness["groups"]["transfer"]["false_positive_rate"], 0.0)
+        self.assertEqual(fairness["capture_groups"], 1)
+        self.assertEqual(fairness["fpr_groups"], 1)
+
+    def test_false_positive_gap_raises_alert(self):
+        monitor = self._monitor()
+        for i in range(5):
+            monitor.observe(metric_result(f"A{i}", 10.0), label=False, group="low")
+        for i in range(5):
+            monitor.observe(metric_result(f"B{i}", 90.0), label=False, group="high")
+        snapshot = monitor.snapshot()
+        self.assertEqual(snapshot["fairness"]["false_positive_rate_gap"], 1.0)
+        self.assertIn(
+            "fairness_fpr_gap", {alert["code"] for alert in snapshot["alerts"]}
+        )
+
+    def test_capture_gap_raises_alert(self):
+        monitor = self._monitor()
+        for i in range(5):
+            monitor.observe(metric_result(f"A{i}", 90.0), label=True, group="low")
+        for i in range(5):
+            monitor.observe(metric_result(f"B{i}", 10.0), label=True, group="high")
+        snapshot = monitor.snapshot()
+        self.assertEqual(snapshot["fairness"]["capture_rate_gap"], 1.0)
+        self.assertIn(
+            "fairness_capture_gap", {alert["code"] for alert in snapshot["alerts"]}
+        )
+
+    def test_ungrouped_observations_are_ignored(self):
+        monitor = self._monitor()
+        monitor.observe(metric_result("T1", 90.0), label=True)
+        fairness = monitor.snapshot()["fairness"]
+        self.assertEqual(fairness["groups"], {})
+        self.assertIsNone(fairness["false_positive_rate_gap"])
+
+
+def make_txn(**overrides) -> Transaction:
+    base = dict(
+        txn_id="T1",
+        user_id="U1",
+        timestamp=datetime(2026, 9, 1, 12, 0, tzinfo=timezone.utc),
+        amount=50.0,
+        currency="USD",
+        channel="card_web",
+        merchant_category="retail",
+        recipient_id="R1",
+        device_id="D1",
+        ip_address="203.0.113.1",
+        geo=(40.0, -74.0),
+        account_age_days=400,
+    )
+    base.update(overrides)
+    return Transaction(**base)
+
+
+class _EvidenceScorer:
+    version = "evidence-test"
+
+    def __init__(self, risk_score: float) -> None:
+        self.risk_score = risk_score
+
+    def score(self, features, behavior_score, graph_features):
+        return {
+            "risk_score": self.risk_score,
+            "top_signals": ["fixed test signal"],
+            "signal_scores": [["fixed test signal", self.risk_score / 100.0]],
+            "explanations": [
+                {
+                    "feature": "amount_dev_30d_z",
+                    "label": "fixed test signal",
+                    "contribution": self.risk_score / 100.0,
+                    "direction": "increases_risk",
+                }
+            ],
+            "explanation_method": "test_attribution",
+            "model_probability": self.risk_score / 100.0,
+            "ring_probability": 0.0,
+            "ring_flag": False,
+        }
+
+
+class TestExplainability(unittest.TestCase):
+    def test_rules_scores_include_signed_explanations(self):
+        result = DecisionEngine().score(
+            make_txn(amount=5000.0, channel="card_web"),
+            {
+                "amount": 5000.0,
+                "amount_dev_30d_z": 6.0,
+                "new_recipient_flag": True,
+                "device_change_flag": True,
+                "txn_count_1h": 5,
+                "same_recipient_1h": 0,
+                "behavior_anomaly_score": 20.0,
+                "is_odd_hours_flag": False,
+            },
+        )
+        self.assertTrue(result["explanations"])
+        self.assertEqual(result["explanation_method"], "deterministic_rules")
+        for item in result["explanations"]:
+            self.assertTrue(item["feature"])
+            self.assertEqual(item["direction"], "increases_risk")
+            self.assertGreater(item["contribution"], 0)
+
+    def test_ensemble_exposes_model_and_ensemble_contributions(self):
+        path = os.path.join(os.path.dirname(__file__), "..", "models", "fraud_model.json")
+        scorer = EnsembleScorer(FraudModel.load(path))
+        result = scorer.score(
+            {"amount": 5000.0, "amount_dev_30d_z": 8.0},
+            80.0,
+            {"recipient_distinct_payers": 5.0, "recipient_payers_1h": 4.0},
+        )
+        self.assertEqual(result["explanation_method"], "gbdt_saabas_path_attribution")
+        features = {item["feature"] for item in result["explanations"]}
+        self.assertIn("behavior_anomaly_score", features)
+        self.assertEqual(result["top_signals"], [item["label"] for item in result["explanations"]])
+
+    def test_service_audits_explanations_and_case_evidence(self):
+        cases: list[dict] = []
+        audit = AuditLog()
+        with ScoringService(
+            scorer=_EvidenceScorer(85.0), audit=audit, review_sink=cases.append
+        ) as service:
+            result = service.score(make_txn())
+        self.assertEqual(result.explanations[0]["feature"], "amount_dev_30d_z")
+        self.assertEqual(result.explanation_method, "test_attribution")
+        self.assertEqual(audit.records[-1]["explanations"][0]["contribution"], 0.85)
+        self.assertEqual(cases[0]["explanations"][0]["feature"], "amount_dev_30d_z")
+
+
+class TestHumanInTheLoop(unittest.TestCase):
+    def test_blocks_are_held_when_segment_requires_confirmation(self):
+        config = DecisionConfig(block_confirmation_segments=("standard",))
+        cases: list[dict] = []
+        audit = AuditLog()
+        with ScoringService(
+            scorer=_EvidenceScorer(99.0),
+            config=config,
+            audit=audit,
+            review_sink=cases.append,
+        ) as service:
+            result = service.score(make_txn())
+        self.assertEqual(result.action, HOLD)
+        self.assertEqual(result.proposed_action, BLOCK)
+        self.assertTrue(result.block_confirmation_required)
+        self.assertTrue(result.review_queued)
+        self.assertTrue(cases[0]["block_confirmation_required"])
+        self.assertTrue(audit.records[-1]["block_confirmation_required"])
+
+    def test_default_policy_still_blocks_without_review(self):
+        result = DecisionEngine().decide(make_txn(), 99.0)
+        self.assertEqual(result["action"], BLOCK)
+        self.assertFalse(result["block_confirmation_required"])
+        self.assertEqual(result["proposed_action"], BLOCK)
+
+    def test_confirmation_segments_are_validated(self):
+        with self.assertRaises(ValueError):
+            DecisionConfig.from_dict(
+                {"block_confirmation_segments": ["not-a-segment"]}
+            )
+        with self.assertRaises(ValueError):
+            DecisionConfig.from_dict(
+                {"block_confirmation_segments": ["standard", "standard"]}
+            )
+
+
+class TestModelGovernance(unittest.TestCase):
+    def setUp(self):
+        self.dir = tempfile.mkdtemp(prefix="fraud-governance-")
+        base = os.path.join(os.path.dirname(__file__), "..", "models", "fraud_model.json")
+        self.base = os.path.abspath(base)
+        self.first = os.path.join(self.dir, "first.json")
+        self.second = os.path.join(self.dir, "second.json")
+        shutil.copy(self.base, self.first)
+        shutil.copy(self.base, self.second)
+        self.registry_path = os.path.join(self.dir, "registry.json")
+        self.audit = AuditLog()
+        self.registry = ModelRegistry(self.registry_path, audit=self.audit)
+
+    def tearDown(self):
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def test_approval_is_required_before_activation(self):
+        record = self.registry.register(
+            self.first, version="v1", actor="trainer", metrics={"auc": 0.91}
+        )
+        self.assertEqual(record["status"], CANDIDATE)
+        with self.assertRaises(ValueError):
+            self.registry.activate("v1", actor="release")
+        approved = self.registry.approve("v1", actor="validator", note="holdout ok")
+        self.assertEqual(approved["status"], APPROVED)
+        active = self.registry.activate("v1", actor="release")
+        self.assertEqual(active["status"], ACTIVE)
+        self.assertEqual(self.registry.active_version, "v1")
+        self.assertTrue(self.registry.verify("v1"))
+        self.assertEqual(self.audit.records[-1]["event_type"], "model_governance")
+
+    def test_tampered_artifact_cannot_be_approved(self):
+        self.registry.register(self.first, version="v1", actor="trainer")
+        with open(self.first, "a", encoding="utf-8") as fh:
+            fh.write(" ")
+        with self.assertRaises(ValueError):
+            self.registry.approve("v1", actor="validator")
+        self.assertFalse(self.registry.verify("v1"))
+
+    def test_rollback_restores_previous_active_model(self):
+        self.registry.register(self.first, version="v1", actor="trainer")
+        self.registry.register(self.second, version="v2", actor="trainer")
+        self.registry.approve("v1", actor="validator")
+        self.registry.approve("v2", actor="validator")
+        self.registry.activate("v1", actor="release")
+        self.registry.activate("v2", actor="release")
+        rolled_back = self.registry.rollback(actor="release")
+        self.assertEqual(rolled_back["version"], "v1")
+        self.assertEqual(self.registry.active_version, "v1")
+        self.assertEqual(self.registry.get("v2")["status"], "RETIRED")
+
+    def test_duplicate_versions_and_active_rejection_are_refused(self):
+        self.registry.register(self.first, version="v1", actor="trainer")
+        with self.assertRaises(ValueError):
+            self.registry.register(self.second, version="v1", actor="trainer")
+        self.registry.approve("v1", actor="validator")
+        self.registry.activate("v1", actor="release")
+        with self.assertRaises(ValueError):
+            self.registry.reject("v1", actor="validator")
+        with self.assertRaises(KeyError):
+            self.registry.approve("missing", actor="validator")
+
+
+class TestRetentionPolicy(unittest.TestCase):
+    def test_closed_cases_are_purged_and_pending_work_is_kept(self):
+        store = ReviewStore()
+        now = datetime.now(timezone.utc)
+        old = (now - timedelta(days=500)).isoformat()
+        closed = case_record("CLOSED")
+        closed["created_at"] = old
+        store.add_case(closed)
+        store.act("CLOSED", "confirm_fraud", "analyst")
+
+        open_case = case_record("OPEN")
+        open_case["created_at"] = old
+        store.add_case(open_case)
+
+        pending = case_record("PENDING")
+        pending["created_at"] = old
+        store.add_case(pending)
+        store.act("PENDING", "request_info", "analyst")
+
+        result = RetentionPolicy(review_days=365).apply(store, now=now)
+        self.assertEqual(result["cases"], 1)
+        self.assertEqual(result["actions"], 1)
+        self.assertIsNone(store.get("CLOSED"))
+        self.assertIsNotNone(store.get("OPEN"))
+        self.assertIsNotNone(store.get("PENDING"))
+        self.assertEqual(store.stats()["by_status"][OPEN], 1)
+        store.close()
+
+    def test_disabled_policy_is_a_noop_and_days_are_validated(self):
+        store = ReviewStore()
+        result = RetentionPolicy(enabled=False).apply(store)
+        self.assertFalse(result["enabled"])
+        self.assertEqual(result["cases"], 0)
+        with self.assertRaises(ValueError):
+            RetentionPolicy(review_days=0)
+        store.close()
+
+
+class TestDashboardGovernance(unittest.TestCase):
+    def setUp(self):
+        self.dir = tempfile.mkdtemp(prefix="fraud-gov-api-")
+        self.model_path = os.path.join(self.dir, "model.json")
+        base = os.path.join(os.path.dirname(__file__), "..", "models", "fraud_model.json")
+        shutil.copy(os.path.abspath(base), self.model_path)
+        self.registry = ModelRegistry(os.path.join(self.dir, "registry.json"))
+        self.registry.register(self.model_path, version="v1", actor="trainer")
+        self.store = ReviewStore()
+        self.monitor = MetricsMonitor(MonitorConfig(min_volume=1000, evaluate_every=1000))
+        self.policy = AccessPolicy.from_config(
+            {
+                "tokens": [
+                    {"token": "read-token", "name": "viewer", "role": VIEWER},
+                    {"token": "admin-token", "name": "admin", "role": ADMIN},
+                ]
+            }
+        )
+        self.server = DashboardServer(
+            self.store,
+            self.monitor,
+            access=self.policy,
+            registry=self.registry,
+            port=0,
+        )
+        self.url = self.server.start()
+
+    def tearDown(self):
+        self.server.stop()
+        self.store.close()
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def _request(self, path, token, method="GET", payload=None):
+        headers = {"Authorization": f"Bearer {token}"}
+        data = None
+        if payload is not None:
+            data = json.dumps(payload).encode()
+            headers["Content-Type"] = "application/json"
+        request = Request(self.url + path, data=data, headers=headers, method=method)
+        with urlopen(request, timeout=5) as response:
+            return response.status, json.loads(response.read().decode())
+
+    def test_viewer_reads_registry_but_cannot_promote(self):
+        status, summary = self._request("/api/models", "read-token")
+        self.assertEqual(status, 200)
+        self.assertEqual(summary["count"], 1)
+        with self.assertRaises(HTTPError) as denied:
+            self._request(
+                "/api/models/v1/approve",
+                "read-token",
+                "POST",
+                {"actor": "viewer"},
+            )
+        self.assertEqual(denied.exception.code, 403)
+        denied.exception.close()
+
+    def test_admin_can_approve_and_activate(self):
+        status, payload = self._request(
+            "/api/models/v1/approve",
+            "admin-token",
+            "POST",
+            {"actor": "validator", "note": "holdout ok"},
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["model"]["status"], APPROVED)
+        status, payload = self._request(
+            "/api/models/v1/activate",
+            "admin-token",
+            "POST",
+            {"note": "release"},
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["active"], "v1")
+        self.assertEqual(payload["models"]["by_status"][ACTIVE], 1)
 
 
 if __name__ == "__main__":
