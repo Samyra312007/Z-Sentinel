@@ -253,6 +253,7 @@ class DecisionEngine:
             two_factor_enrolled=bool(getattr(txn, "two_factor_enrolled", False)),
         )
         result["ring_boost"] = ring_boost
+        result["signal_scores"] = signals
         return result
 
     # -- business rules on top of any 0-100 risk score ----------------------

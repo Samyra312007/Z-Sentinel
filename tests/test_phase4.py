@@ -25,6 +25,7 @@ from fraud_detection.reviews import (
     OPEN,
     ReviewStore,
 )
+from fraud_detection.service import ScoringService
 from fraud_detection.simulator import Transaction
 
 T0 = datetime(2026, 9, 1, 12, 0, tzinfo=timezone.utc)
@@ -242,6 +243,74 @@ class TestReviewStore(unittest.TestCase):
             for suffix in ("", "-wal", "-shm"):
                 if os.path.exists(path + suffix):
                     os.remove(path + suffix)
+
+
+class _FixedScorer:
+    version = "fixed-test"
+
+    def __init__(self, risk_score: float) -> None:
+        self.risk_score = risk_score
+
+    def score(self, features, behavior_score, graph_features):
+        return {
+            "risk_score": self.risk_score,
+            "top_signals": ["fixed test signal"],
+            "signal_scores": [["fixed test signal", self.risk_score / 100.0]],
+            "model_probability": self.risk_score / 100.0,
+            "ring_probability": 0.0,
+            "ring_flag": False,
+        }
+
+
+class TestScoringReviewIntegration(unittest.TestCase):
+    def test_hold_enqueues_case_with_evidence(self):
+        cases: list[dict] = []
+        with ScoringService(
+            scorer=_FixedScorer(85.0), review_sink=cases.append
+        ) as service:
+            result = service.score(make_txn())
+        self.assertEqual(result.action, HOLD)
+        self.assertTrue(result.review_queued)
+        self.assertEqual(result.case_id, "T1")
+        self.assertEqual(len(cases), 1)
+        case = cases[0]
+        self.assertEqual(case["txn_id"], "T1")
+        self.assertEqual(case["features"]["amount"], 50.0)
+        self.assertEqual(case["top_signals"], ["fixed test signal"])
+        self.assertTrue(case["user_ref"].startswith("sha256:"))
+        self.assertEqual(case["signal_scores"], [["fixed test signal", 0.85]])
+
+    def test_enrolled_user_goes_to_step_up_queue(self):
+        cases: list[dict] = []
+        with ScoringService(
+            scorer=_FixedScorer(85.0), review_sink=cases.append
+        ) as service:
+            result = service.score(make_txn(two_factor_enrolled=True))
+        self.assertEqual(result.action, STEP_UP)
+        self.assertTrue(result.review_queued)
+        self.assertEqual(len(cases), 1)
+
+    def test_block_is_not_queued(self):
+        cases: list[dict] = []
+        with ScoringService(
+            scorer=_FixedScorer(99.0), review_sink=cases.append
+        ) as service:
+            result = service.score(make_txn())
+        self.assertEqual(result.action, "BLOCK")
+        self.assertFalse(result.review_queued)
+        self.assertEqual(cases, [])
+
+    def test_queue_failure_does_not_change_payment_decision(self):
+        def broken_sink(case: dict) -> None:
+            raise RuntimeError("queue unavailable")
+
+        with ScoringService(
+            scorer=_FixedScorer(85.0), review_sink=broken_sink
+        ) as service:
+            result = service.score(make_txn())
+        self.assertEqual(result.action, HOLD)
+        self.assertFalse(result.review_queued)
+        self.assertIn("queue unavailable", result.review_error or "")
 
 
 if __name__ == "__main__":

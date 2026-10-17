@@ -27,9 +27,9 @@ import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FutureTimeout
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Callable
 
 from fraud_detection.collection import hash_subject_id, parse_payload
 from fraud_detection.decision import (
@@ -201,6 +201,13 @@ class ScoreResult:
     feature_latency_ms: float
     behavior_score: float = 0.0
     behavior_status: str = "missing"
+    features: dict[str, Any] = field(default_factory=dict)
+    graph_features: dict[str, Any] = field(default_factory=dict)
+    behavior_channels: dict[str, Any] = field(default_factory=dict)
+    signal_scores: list[Any] = field(default_factory=list)
+    case_id: str | None = None
+    review_queued: bool = False
+    review_error: str | None = None
     model_probability: float | None = None
     ring_probability: float | None = None
     ring_flag: bool = False
@@ -227,6 +234,8 @@ class ScoringService:
         store: FeatureStore | None = None,
         subject_salt: str | None = None,
         workers: int = 4,
+        review_sink: Callable[[dict[str, Any]], Any] | None = None,
+        review_actions: tuple[str, ...] = (HOLD, STEP_UP),
     ) -> None:
         if model is None and model_path is not None:
             model = FraudModel.load(model_path)
@@ -241,6 +250,8 @@ class ScoringService:
         self.graph = GraphFeatureExtractor()
         self.audit = audit or AuditLog()
         self.subject_salt = subject_salt
+        self.review_sink = review_sink
+        self.review_actions = tuple(review_actions)
         self._executor = ThreadPoolExecutor(
             max_workers=max(1, workers), thread_name_prefix="fraud-score"
         )
@@ -370,7 +381,7 @@ class ScoringService:
         )
         self.audit.write(entry)
 
-        return ScoreResult(
+        result = ScoreResult(
             txn_id=txn.txn_id,
             user_ref=scoring_txn.user_id,
             correlation_id=correlation,
@@ -384,6 +395,10 @@ class ScoringService:
             feature_latency_ms=entry.feature_latency_ms,
             behavior_score=round(behavior_score, 2),
             behavior_status=behavior_status,
+            features=feats,
+            graph_features=graph_features,
+            behavior_channels=behavior_channels,
+            signal_scores=list(scored.get("signal_scores") or []),
             model_probability=scored.get("model_probability"),
             ring_probability=scored.get("ring_probability"),
             ring_flag=bool(scored.get("ring_flag", False)),
@@ -391,6 +406,73 @@ class ScoringService:
             fallback_reason=fallback_reason,
             decided_at=decided_at,
         )
+        self._enqueue_review(result, txn, scoring_txn)
+        return result
+
+    # -- review queue -------------------------------------------------------
+
+    def _enqueue_review(
+        self,
+        result: ScoreResult,
+        txn: Transaction,
+        scoring_txn: Transaction,
+    ) -> None:
+        if self.review_sink is None or result.action not in self.review_actions:
+            return
+        case = self.build_case(result, txn, scoring_txn)
+        try:
+            created = self.review_sink(case)
+        except Exception as exc:  # keep the payment decision authoritative
+            result.review_error = f"{type(exc).__name__}: {exc}"
+            return
+        result.review_queued = True
+        if isinstance(created, dict) and created.get("case_id"):
+            result.case_id = str(created["case_id"])
+        else:
+            result.case_id = str(case["case_id"])
+
+    @staticmethod
+    def build_case(
+        result: ScoreResult,
+        txn: Transaction,
+        scoring_txn: Transaction,
+    ) -> dict[str, Any]:
+        """Build the evidence package investigator dashboards consume."""
+        return {
+            "case_id": txn.txn_id,
+            "txn_id": txn.txn_id,
+            "correlation_id": result.correlation_id,
+            "created_at": result.decided_at,
+            "user_ref": scoring_txn.user_id,
+            "amount": txn.amount,
+            "currency": txn.currency,
+            "channel": txn.channel,
+            "merchant_category": txn.merchant_category,
+            "recipient_id": txn.recipient_id,
+            "device_id": txn.device_id,
+            "ip_address": txn.ip_address,
+            "geo": list(txn.geo),
+            "account_age_days": txn.account_age_days,
+            "two_factor_enrolled": bool(txn.two_factor_enrolled),
+            "risk_score": result.risk_score,
+            "action": result.action,
+            "outcome": result.outcome,
+            "segment": result.segment,
+            "model_version": result.model_version,
+            "top_signals": list(result.top_signals),
+            "signal_scores": result.signal_scores,
+            "model_probability": result.model_probability,
+            "ring_probability": result.ring_probability,
+            "ring_flag": result.ring_flag,
+            "behavior_status": result.behavior_status,
+            "behavior_score": result.behavior_score,
+            "behavior_channels": result.behavior_channels,
+            "features": result.features,
+            "graph_features": result.graph_features,
+            "degraded": result.degraded,
+            "fallback_reason": result.fallback_reason,
+            "latency_ms": result.latency_ms,
+        }
 
     # -- internals ----------------------------------------------------------
 
