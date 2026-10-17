@@ -9,6 +9,11 @@ A dependency-free HTTP API plus a small browser UI for fraud analysts:
 * `GET  /api/metrics`               monitoring snapshot, review stats and alerts
 * `GET  /api/config`                active segment thresholds
 * `GET  /api/feedback`              labeled rows for retraining (admin)
+* `GET  /api/models`                model registry, approvals and events
+* `POST /api/models/{v}/approve`    approve a candidate model (admin)
+* `POST /api/models/{v}/reject`     reject a candidate model (admin)
+* `POST /api/models/{v}/activate`   serve an approved model (admin)
+* `POST /api/models/rollback`       restore the previous active model (admin)
 * `GET  /api/whoami`                authenticated principal and role
 * `GET  /api/health`
 
@@ -32,6 +37,7 @@ from urllib.parse import parse_qs, unquote, urlsplit
 
 from fraud_detection.access import AccessPolicy, Principal
 from fraud_detection.decision import DecisionConfig
+from fraud_detection.governance import ModelRegistry
 from fraud_detection.monitoring import MetricsMonitor
 from fraud_detection.reviews import ReviewStore
 
@@ -47,6 +53,7 @@ class DashboardContext:
     model_version: str = "rules-only"
     static_dir: Path = _STATIC_DIR
     access: AccessPolicy | None = None
+    registry: ModelRegistry | None = None
 
     def metrics(self) -> dict[str, Any]:
         snapshot = self.monitor.snapshot()
@@ -71,6 +78,7 @@ class DashboardServer:
         static_dir: Path | None = None,
         access: AccessPolicy | None = None,
         tls_context: ssl.SSLContext | None = None,
+        registry: ModelRegistry | None = None,
     ) -> None:
         self.context = DashboardContext(
             reviews=reviews,
@@ -79,6 +87,7 @@ class DashboardServer:
             model_version=model_version,
             static_dir=static_dir or _STATIC_DIR,
             access=access,
+            registry=registry,
         )
         self.host = host
         self.port = port
@@ -199,6 +208,11 @@ def _make_handler(context: DashboardContext):
                     if self._authorize("admin"):
                         rows = context.reviews.feedback()
                         self._json(HTTPStatus.OK, {"feedback": rows, "count": len(rows)})
+                elif path == "/api/models":
+                    if self._authorize("read"):
+                        if context.registry is None:
+                            raise ValueError("model governance is not configured")
+                        self._json(HTTPStatus.OK, context.registry.summary())
                 elif path.startswith("/api/cases/"):
                     if self._authorize("read"):
                         self._case_route(path)
@@ -218,6 +232,9 @@ def _make_handler(context: DashboardContext):
 
         def do_POST(self) -> None:  # noqa: N802
             path = urlsplit(self.path).path
+            if path.startswith("/api/models/"):
+                self._model_action(path)
+                return
             if not path.startswith("/api/cases/") or not path.endswith("/actions"):
                 self._json(HTTPStatus.NOT_FOUND, {"error": "unknown endpoint"})
                 return
@@ -241,6 +258,68 @@ def _make_handler(context: DashboardContext):
                 self._json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
             except KeyError:
                 self._json(HTTPStatus.NOT_FOUND, {"error": "case not found"})
+            except Exception as exc:  # pragma: no cover - defensive boundary
+                self._json(
+                    HTTPStatus.INTERNAL_SERVER_ERROR,
+                    {"error": f"{type(exc).__name__}: {exc}"},
+                )
+
+        def _model_action(self, path: str) -> None:
+            """Route admin model-governance transitions."""
+            if not self._authorize("admin"):
+                return
+            if context.registry is None:
+                self._json(
+                    HTTPStatus.NOT_FOUND,
+                    {"error": "model governance is not configured"},
+                )
+                return
+            remainder = path[len("/api/models/"):].strip("/")
+            try:
+                payload = self._read_json()
+                actor = str(
+                    payload.get("actor")
+                    or (self.principal.name if self.principal else "")
+                )
+                note = payload.get("note")
+                if remainder == "rollback":
+                    record = context.registry.rollback(
+                        actor=actor,
+                        to_version=payload.get("to_version"),
+                        note=note,
+                    )
+                else:
+                    parts = remainder.split("/")
+                    if len(parts) != 2 or not parts[0] or not parts[1]:
+                        raise ValueError("expected /api/models/{version}/{action}")
+                    version = unquote(parts[0])
+                    action = parts[1]
+                    if action == "approve":
+                        record = context.registry.approve(
+                            version, actor=actor, note=note
+                        )
+                    elif action == "reject":
+                        record = context.registry.reject(
+                            version, actor=actor, note=note
+                        )
+                    elif action == "activate":
+                        record = context.registry.activate(
+                            version, actor=actor, note=note
+                        )
+                    else:
+                        raise ValueError(f"unknown model action {action!r}")
+                self._json(
+                    HTTPStatus.OK,
+                    {
+                        "model": record,
+                        "active": context.registry.active_version,
+                        "models": context.registry.summary(),
+                    },
+                )
+            except ValueError as exc:
+                self._json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+            except KeyError as exc:
+                self._json(HTTPStatus.NOT_FOUND, {"error": f"unknown model {exc.args[0]!r}"})
             except Exception as exc:  # pragma: no cover - defensive boundary
                 self._json(
                     HTTPStatus.INTERNAL_SERVER_ERROR,
