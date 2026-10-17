@@ -453,7 +453,7 @@ class ScoringService:
             "ip_address": txn.ip_address,
             "geo": list(txn.geo),
             "account_age_days": txn.account_age_days,
-            "two_factor_enrolled": bool(txn.two_factor_enrolled),
+            "two_factor_enrolled": bool(getattr(txn, "two_factor_enrolled", False)),
             "risk_score": result.risk_score,
             "action": result.action,
             "outcome": result.outcome,

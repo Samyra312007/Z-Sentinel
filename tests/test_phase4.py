@@ -21,6 +21,7 @@ from fraud_detection.decision import (
     DecisionConfig,
     DecisionEngine,
 )
+from fraud_detection import phase4
 from fraud_detection.dashboard import DashboardServer
 from fraud_detection.monitoring import MetricsMonitor, MonitorConfig
 from fraud_detection.reviews import (
@@ -529,6 +530,49 @@ class TestDashboard(unittest.TestCase):
             urlopen(self.url + "/static/..%2fREADME.md", timeout=5)
         self.assertEqual(traversal.exception.code, 404)
         traversal.exception.close()
+
+
+class TestPhase4Run(unittest.TestCase):
+    def test_end_to_end_with_fixed_scorer(self):
+        db_path = tempfile.mktemp(suffix=".sqlite")
+        audit_path = tempfile.mktemp(suffix=".jsonl")
+        summary, store, monitor, version = phase4.run(
+            transactions=120,
+            users=40,
+            fraud_rate=0.08,
+            seed=5,
+            warmup=80,
+            model_path=None,
+            config=DecisionConfig(),
+            db_path=db_path,
+            audit_path=audit_path,
+            fresh=True,
+            demo_reviews=5,
+            monitor_config=MonitorConfig(min_volume=1000),
+            scorer=_FixedScorer(85.0),
+        )
+        try:
+            self.assertEqual(version, "fixed-test")
+            self.assertEqual(summary.total, 120)
+            self.assertEqual(summary.queued, 120)
+            self.assertEqual(summary.expected_cases, 120)
+            self.assertEqual(summary.queue_failures, 0)
+            self.assertEqual(summary.audit_records, 120)
+            self.assertEqual(summary.cases["total"], 120)
+            self.assertEqual(summary.cases["reviewed"], 5)
+            self.assertEqual(summary.demo_reviews, 5)
+            self.assertEqual(summary.metrics["window_size"], 120)
+            cases = store.list_cases(status=None, limit=2)
+            detail = store.get(cases[0]["case_id"])
+            self.assertTrue(detail["top_signals"])  # type: ignore[index]
+            self.assertTrue(detail["features"])  # type: ignore[index]
+        finally:
+            store.close()
+            for suffix in ("", "-wal", "-shm"):
+                if os.path.exists(db_path + suffix):
+                    os.remove(db_path + suffix)
+            if os.path.exists(audit_path):
+                os.remove(audit_path)
 
 
 if __name__ == "__main__":
