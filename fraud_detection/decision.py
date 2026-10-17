@@ -18,6 +18,7 @@ make them externally configurable without touching call sites.
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 
 from fraud_detection.simulator import Transaction
@@ -27,6 +28,9 @@ ALLOW_WITH_LOG = "ALLOW_WITH_LOGGING"
 STEP_UP = "STEP_UP_2FA"
 HOLD = "HOLD_FOR_REVIEW"
 BLOCK = "BLOCK"
+
+SEGMENTS = ("standard", "new_user", "high_value")
+THRESHOLD_KEYS = ("log", "step_up", "hold", "block")
 
 
 @dataclass(frozen=True)
@@ -59,6 +63,95 @@ class DecisionConfig:
         }
     )
     graph_ring_boost: float = 15.0  # plan: ring flag boosts score by 15
+
+    # -- validation / external configuration (plan 4.1) --------------------
+
+    def validate(self) -> None:
+        """Raise ValueError unless every segment has sane, ordered thresholds."""
+        if set(self.thresholds) != set(SEGMENTS):
+            raise ValueError(f"thresholds must define exactly {SEGMENTS}")
+        for segment, values in self.thresholds.items():
+            if set(values) != set(THRESHOLD_KEYS):
+                raise ValueError(
+                    f"segment {segment!r} must define {THRESHOLD_KEYS}"
+                )
+            ordered = [values[key] for key in THRESHOLD_KEYS]
+            for key, value in zip(THRESHOLD_KEYS, ordered):
+                if isinstance(value, bool) or not isinstance(value, (int, float)):
+                    raise ValueError(f"{segment}.{key} must be numeric")
+            if not (0.0 <= ordered[0] < ordered[1] < ordered[2] < ordered[3] <= 100.0):
+                raise ValueError(
+                    f"segment {segment!r} thresholds must satisfy "
+                    "0 <= log < step_up < hold < block <= 100"
+                )
+        for name, weight in self.signal_weights.items():
+            if isinstance(weight, bool) or not isinstance(weight, (int, float)) or weight < 0:
+                raise ValueError(f"signal weight {name!r} must be a non-negative number")
+        if (
+            isinstance(self.graph_ring_boost, bool)
+            or not isinstance(self.graph_ring_boost, (int, float))
+            or not 0.0 <= self.graph_ring_boost <= 100.0
+        ):
+            raise ValueError("graph_ring_boost must be between 0 and 100")
+
+    def to_dict(self) -> dict:
+        return {
+            "thresholds": {k: dict(v) for k, v in self.thresholds.items()},
+            "signal_weights": dict(self.signal_weights),
+            "graph_ring_boost": self.graph_ring_boost,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "DecisionConfig":
+        """Merge a partial JSON config over the safe defaults, then validate."""
+        if not isinstance(data, dict):
+            raise ValueError("decision config must be an object")
+        unknown = set(data) - {"thresholds", "signal_weights", "graph_ring_boost"}
+        if unknown:
+            raise ValueError(f"unknown decision config fields: {sorted(unknown)}")
+
+        base = cls()
+        thresholds = {k: dict(v) for k, v in base.thresholds.items()}
+        raw_thresholds = data.get("thresholds", {})
+        if not isinstance(raw_thresholds, dict):
+            raise ValueError("thresholds must be an object")
+        for segment, values in raw_thresholds.items():
+            if segment not in thresholds:
+                raise ValueError(f"unknown segment {segment!r}; expected {SEGMENTS}")
+            if not isinstance(values, dict):
+                raise ValueError(f"thresholds.{segment} must be an object")
+            merged = {**thresholds[segment], **values}
+            unknown_keys = set(values) - set(THRESHOLD_KEYS)
+            if unknown_keys:
+                raise ValueError(
+                    f"unknown thresholds for {segment!r}: {sorted(unknown_keys)}"
+                )
+            thresholds[segment] = merged
+
+        signal_weights = dict(base.signal_weights)
+        raw_weights = data.get("signal_weights", {})
+        if not isinstance(raw_weights, dict):
+            raise ValueError("signal_weights must be an object")
+        signal_weights.update(raw_weights)
+
+        config = cls(
+            thresholds=thresholds,
+            signal_weights=signal_weights,
+            graph_ring_boost=data.get("graph_ring_boost", base.graph_ring_boost),
+        )
+        config.validate()
+        return config
+
+    @classmethod
+    def load(cls, path: str) -> "DecisionConfig":
+        with open(path, "r", encoding="utf-8") as fh:
+            return cls.from_dict(json.load(fh))
+
+    def save(self, path: str) -> None:
+        self.validate()
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(self.to_dict(), fh, indent=2, sort_keys=True)
+            fh.write("\n")
 
 
 def resolve_segment(txn_txn_amount: float, account_age_days: int) -> str:
@@ -155,7 +248,10 @@ class DecisionEngine:
         signals.sort(key=lambda kv: -abs(kv[1]))
         top = [name for name, _ in signals[:3]] or ["no_risk_signals"]
 
-        result = self.decide(txn, score, behavior_score, top)
+        result = self.decide(
+            txn, score, behavior_score, top,
+            two_factor_enrolled=bool(getattr(txn, "two_factor_enrolled", False)),
+        )
         result["ring_boost"] = ring_boost
         return result
 
@@ -167,18 +263,24 @@ class DecisionEngine:
         risk_score: float,
         behavior_score: float = 0.0,
         top_signals: list[str] | None = None,
+        *,
+        two_factor_enrolled: bool | None = None,
     ) -> dict:
         """Apply the plan's threshold policy to a model or rules risk score.
 
         Used by both paths: rules-only fallback and the Phase 2 ensemble.
+        At the hold band, a 2FA-enrolled user is challenged (step-up) instead
+        of being held for manual review; unenrolled users are held.
         """
         score = round(float(risk_score), 2)
         segment = resolve_segment(txn.amount, txn.account_age_days)
+        if two_factor_enrolled is None:
+            two_factor_enrolled = bool(getattr(txn, "two_factor_enrolled", False))
         t = self.config.thresholds[segment]
         if score >= t["block"]:
             action = BLOCK
         elif score >= t["hold"]:
-            action = HOLD
+            action = STEP_UP if two_factor_enrolled else HOLD
         elif score >= t["step_up"]:
             # plan rules layer: >60 + behavioral anomaly -> 2FA, else log.
             # Note: score 60-80 WITHOUT a behavior anomaly stays ALLOW_WITH_LOG

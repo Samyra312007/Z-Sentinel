@@ -445,7 +445,8 @@ class ScoringService:
         if self.scorer is not None:
             result = self.scorer.score(features, behavior_score, graph_features)
             decision = self.decision.decide(
-                txn, result["risk_score"], behavior_score, result["top_signals"]
+                txn, result["risk_score"], behavior_score, result["top_signals"],
+                two_factor_enrolled=bool(getattr(txn, "two_factor_enrolled", False)),
             )
             return {**result, "action": decision["action"], "segment": decision["segment"]}
         result = self.decision.score(txn, features, ring_flag=ring_flag)

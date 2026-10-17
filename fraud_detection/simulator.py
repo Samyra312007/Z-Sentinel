@@ -70,6 +70,8 @@ class Transaction:
     # Ground truth — evaluation only, never given to scoring code:
     is_fraud: bool = False
     fraud_strategy: str | None = None
+    # Account capability used by the Phase 4 decision policy at the hold band.
+    two_factor_enrolled: bool = False
 
 
 # ---------------------------------------------------------------------------
