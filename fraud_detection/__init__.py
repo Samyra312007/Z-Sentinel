@@ -18,6 +18,12 @@ a persistent investigator review queue with feedback labels, a browser
 dashboard and HTTP API, and operational monitoring with drift, latency,
 capture and false-positive alerts.
 
+Phase 5 (Security, Compliance & Responsible AI): tamper-evident decision and
+governance audit, bearer-token RBAC with TLS support, signed per-score
+explanations, per-group fairness monitoring and alerts, segment-level block
+confirmation, a model approval/activation/rollback registry, and a closed-case
+retention policy.
+
 Train and score:
 
     python -m fraud_detection.train --out models/fraud_model.json
@@ -36,6 +42,12 @@ Phase 4 operations demo (dashboard, review queue, monitoring):
     python -m fraud_detection.phase4 --model models/fraud_model.json \
         --transactions 2000 --demo-reviews 12 --check
 
+Phase 5 security and governance demo:
+
+    ./run_phase5.sh
+    python -m fraud_detection.phase5 --model models/fraud_model.json \
+        --transactions 1500 --demo-reviews 8 --demo-rollback --check
+
 Rules-only fallback (no model needed):
 
     python -m fraud_detection --transactions 500 --seed 42
@@ -45,4 +57,4 @@ Tests:
     python -m unittest discover -s tests -v
 """
 
-__version__ = "0.4.0"
+__version__ = "0.5.0"

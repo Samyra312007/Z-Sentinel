@@ -35,5 +35,6 @@
     "mule_recipient_3plus_users": 25.0,
     "card_testing_retry_pattern": 70.0
   },
-  "graph_ring_boost": 15.0
+  "graph_ring_boost": 15.0,
+  "block_confirmation_segments": ["high_value"]
 }

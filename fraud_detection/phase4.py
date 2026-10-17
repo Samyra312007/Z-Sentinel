@@ -70,6 +70,9 @@ def run(
     demo_reviews: int = 0,
     monitor_config: MonitorConfig | None = None,
     scorer: Any | None = None,
+    group_fn: Any | None = None,
+    audit_log: Any | None = None,
+    monitor: MetricsMonitor | None = None,
 ) -> tuple[Phase4Summary, ReviewStore, MetricsMonitor, str]:
     if fresh:
         for suffix in ("", "-wal", "-shm"):
@@ -80,10 +83,10 @@ def run(
     model = FraudModel.load(model_path) if model_path else None
     if scorer is None and model is not None:
         scorer = EnsembleScorer(model)
-    audit = AuditLog(audit_path)
-    existing_audit = len(AuditLog.read(audit_path)) if audit_path and os.path.exists(audit_path) else 0
+    audit = audit_log if audit_log is not None else AuditLog(audit_path)
+    existing_audit = int(getattr(audit, "count", 0))
     store = ReviewStore(db_path)
-    monitor = MetricsMonitor(monitor_config or MonitorConfig())
+    monitor = monitor or MetricsMonitor(monitor_config or MonitorConfig())
     service = ScoringService(
         model=model,
         scorer=scorer,
@@ -99,7 +102,8 @@ def run(
     for txn in sim.events(transactions):
         payload = payload_from_sample(txn.behavior) if txn.behavior else None
         result = service.score(txn, payload, correlation_id=f"CORR-{txn.txn_id}")
-        monitor.observe(result, label=txn.is_fraud)  # demo labels only
+        group = group_fn(txn) if group_fn is not None else None
+        monitor.observe(result, label=txn.is_fraud, group=group)  # demo labels only
         truth[txn.txn_id] = txn.is_fraud
         summary.total += 1
         if txn.is_fraud:
@@ -124,9 +128,7 @@ def run(
             monitor.record_feedback(case["txn_id"], 1 if labeled else 0)
             summary.demo_reviews += 1
 
-    summary.audit_records = (
-        len(AuditLog.read(audit_path)) - existing_audit if audit_path else 0
-    )
+    summary.audit_records = int(getattr(audit, "count", 0)) - existing_audit
     summary.cases = store.stats()
     summary.metrics = monitor.snapshot()
     version = (
