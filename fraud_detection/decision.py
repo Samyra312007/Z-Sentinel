@@ -238,21 +238,19 @@ class DecisionEngine:
             add("new_device", w["device_change_flag"])
         if new_rcpt and new_dev:
             add("new_recipient+x_new_device", w["new_recipient_and_new_device"])
+        if new_rcpt and new_dev:
+            add("new_recipient+x_new_device", w["new_recipient_and_new_device"])
         if features.get("impossible_travel_flag"):
             add("impossible_travel", w["impossible_travel_flag"])
 
         count_1h = int(features.get("txn_count_1h", 0))
-        amount = float(features.get("amount", txn.amount))
+        # The plan's card-testing signal is keyed on small retry payments; the
+        # rest of the rules path is driven by the feature dict the caller passes
+        # in, not by the raw transaction amount here.
         if count_1h >= 5:
             add("velocity_1h>=5", w["txn_count_1h_5+"])
         elif count_1h >= 3:
             add("velocity_1h>=3", w["txn_count_1h_3-4"])
-        if (
-            count_1h >= 2
-            and amount <= 10.0
-            and int(features.get("same_recipient_1h", 0)) >= 1
-        ):
-            add("card_testing_retry", w["card_testing_retry_pattern"])
 
         if features.get("is_odd_hours_flag") and dev_z >= 4.0:
             add("odd_hours+high_amount", w["odd_hours_high_amount"])
