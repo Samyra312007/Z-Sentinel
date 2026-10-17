@@ -174,47 +174,47 @@ Transaction arrives → Extract features → Call ML for z/OS scoring → Decisi
 ```
 
 **Implementation Steps:**
-- [ ] Insert scoring call into transaction flow (CICS transaction, IMS application, or z/OS batch that feeds real-time)
-- [ ] Feature computation must be fast (pre-computed features where possible)
-- [ ] Scoring call: synchronous, timeout-bounded (fail-open or fail-closed per policy)
-- [ ] Decision engine applies business rules on top of ML score:
-  - [ ] score < 30: Allow
-  - [ ] 30-60: Allow with logging
-  - [ ] 60-80: Step-up authentication (OTP, biometric challenge)
-  - [ ] 80-95: Hold for review
-  - [ ] > 95: Block
-- [ ] Log every decision with: transaction ID, score, model version, explanation, decision, timestamp
+- [x] Insert scoring call into transaction flow (CICS transaction, IMS application, or z/OS batch that feeds real-time)
+- [x] Feature computation must be fast (pre-computed features where possible)
+- [x] Scoring call: synchronous, timeout-bounded (fail-open or fail-closed per policy)
+- [x] Decision engine applies business rules on top of ML score:
+  - [x] score < 30: Allow
+  - [x] 30-60: Allow with logging
+  - [x] 60-80: Step-up authentication (OTP, biometric challenge)
+  - [x] 80-95: Hold for review
+  - [x] > 95: Block
+- [x] Log every decision with: transaction ID, score, model version, explanation, decision, timestamp
 
 #### 3.2 Behavioral Biometrics Collection
 
 **Frontend Collection (lightweight SDK):**
-- [ ] Keystroke dynamics: keydown/keyup timing, digraphs/trigraphs patterns
-- [ ] Mouse dynamics: movement velocity, curvature, click positions
-- [ ] Touch dynamics (mobile): swipe pressure, speed, angle
-- [ ] Session-level aggregates sent with transaction
+- [x] Keystroke dynamics: keydown/keyup timing, digraphs/trigraphs patterns
+- [x] Mouse dynamics: movement velocity, curvature, click positions
+- [x] Touch dynamics (mobile): swipe pressure, speed, angle
+- [x] Session-level aggregates sent with transaction
 
 **Privacy Considerations:**
-- [ ] Collect only behavioral patterns, not content (what they type, not the text)
-- [ ] Hash user identity before sending behavioral data
-- [ ] Allow users to opt out (fall back to transaction-only scoring)
+- [x] Collect only behavioral patterns, not content (what they type, not the text)
+- [x] Hash user identity before sending behavioral data
+- [x] Allow users to opt out (fall back to transaction-only scoring)
 
 #### 3.3 Feature Store (Real-Time)
 
 **Requirements:**
-- [ ] Low-latency reads (sub-millisecond) for real-time features
-- [ ] Stores: user's historical aggregates, behavioral baselines, device history
-- [ ] Implementation options on IBM Z:
-  - [ ] In-memory data cache (IMS DB, DB2 with caching, or attached Redis)
-  - [ ] Pre-computed feature tables updated by streaming pipeline
+- [x] Low-latency reads (sub-millisecond) for real-time features
+- [x] Stores: user's historical aggregates, behavioral baselines, device history
+- [x] Implementation options on IBM Z:
+  - [x] In-memory data cache (IMS DB, DB2 with caching, or attached Redis)
+  - [x] Pre-computed feature tables updated by streaming pipeline
 
 **Features to Precompute:**
-- [ ] User's avg transaction amount (7d, 30d rolling)
-- [ ] User's typical transaction locations
-- [ ] User's typical devices
-- [ ] User's transaction velocity (count/hr, count/day)
-- [ ] Time since last transaction
-- [ ] Account age
-- [ ] Historical fraud flag on account
+- [x] User's avg transaction amount (7d, 30d rolling)
+- [x] User's typical transaction locations
+- [x] User's typical devices
+- [x] User's transaction velocity (count/hr, count/day)
+- [x] Time since last transaction
+- [x] Account age
+- [x] Historical fraud flag on account
 
 ---
 

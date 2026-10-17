@@ -1,1 +1,4 @@
 .freebuff/
+logs/
+__pycache__/
+*.pyc

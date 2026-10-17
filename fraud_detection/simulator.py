@@ -42,6 +42,14 @@ class BehavioralSample:
     inter_key_ms: float  # mean interval between consecutive keys
     mouse_velocity_px_s: float  # mean pointer velocity
     mouse_entropy: float  # movement entropy (0 = robotic, high = human)
+    # Click shape: count plus mean normalised viewport position (0..1).
+    click_count: int = 0
+    click_x_mean_norm: float = 0.0
+    click_y_mean_norm: float = 0.0
+    # Touch dynamics (mobile sessions); 0.0 when the session had no touch input.
+    touch_pressure_mean: float = 0.0
+    touch_speed_px_s: float = 0.0
+    touch_swipe_angle_deg: float = 0.0
 
 
 @dataclass(frozen=True)
