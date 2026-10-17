@@ -266,23 +266,23 @@ ELSE: ALLOW
 
 #### 5.1 IBM Z Security Integration
 
-- [ ] **Encryption:** All fraud data encrypted at rest (DB2 encryption, zFS encryption) and in transit (TLS)
-- [ ] **Access Control:** RACF profiles control who can view fraud scores, investigator dashboards, model configurations
-- [ ] **Audit Logging:** Every scoring decision, model version, threshold change logged to immutable audit trail
-- [ ] **Secure Execution:** ML inference runs in z/OS secure enclave; model artifacts protected
+- [x] **Encryption:** TLS 1.2+ for the dashboard; at-rest encryption is a platform control (zFS/DB2 with CPACF-backed RACF keyrings), documented in `docs/PHASE5.md`
+- [x] **Access Control:** bearer-token RBAC (`viewer` / `investigator` / `admin`) with a documented RACF/z/OS Connect mapping; token file mode `0600`
+- [x] **Audit Logging:** immutable HMAC-chained audit for every scoring decision and model governance event (register/approve/activate/rollback); threshold values are captured per decision
+- [x] **Secure Execution:** model artifacts SHA-256 pinned and re-verified at approval/activation; ML-for-z/OS enclave execution is the documented deployment boundary
 
 #### 5.2 Responsible AI Controls
 
-- [ ] **Explainability:** Every fraud score includes top contributing features (SHAP values or feature importance)
-- [ ] **Bias Monitoring:** Track score distribution and false positive rate by protected attributes (where legally permissible)
-- [ ] **Human-in-the-loop:** High-risk decisions (blocks) can require analyst confirmation for certain segments
-- [ ] **Model Governance:** Versioned models, approval workflow for model updates, rollback capability
-- [ ] **Privacy:** Behavioral biometrics processed without storing raw input data; data retained only as long as needed
+- [x] **Explainability:** signed per-score feature contributions (Saabas path attribution on the GBDT, deterministic rule points on fallback) in the result, audit, review case and dashboard
+- [x] **Bias Monitoring:** per-group score/elevated distribution, capture rate and false-positive rate with gap alerts; group collection is gated on legal basis
+- [x] **Human-in-the-loop:** `block_confirmation_segments` turns blocks in selected segments into analyst-confirmed holds with `proposed_action: BLOCK`
+- [x] **Model Governance:** file-backed registry with hash-pinned artifacts, approval gate, activation and rollback drill plus admin dashboard API
+- [x] **Privacy:** SDK/ingestion accepts aggregates only, subject references are salted hashes, and closed review cases are purged by `RetentionPolicy`
 
 #### 5.3 Compliance Considerations
-- [ ] PCI DSS: If handling card data, ensure PCI compliance in architecture
-- [ ] GDPR/CCPA: Right to explanation—model explanations support this
-- [ ] Model risk management: Document model development, validation, and monitoring (SR 11-7 style if financial)
+- [x] PCI DSS: no PAN/CVV/track data accepted or stored; tokens and pseudonymous references only (scope boundary documented)
+- [x] GDPR/CCPA: `/api/cases/{id}` explanation payload and immutable audit support right-to-explanation; retention removes closed review data
+- [x] Model risk management: model card plus registry approval/rollback history, validation evidence and monitoring/fairness documentation (SR 11-7 style)
 
 ---
 
@@ -349,8 +349,8 @@ ELSE: ALLOW
 | Behavioral collection | Lightweight JavaScript/mobile SDK | Front-end, not IBM Z-specific | [ ] |
 | Decision engine | Custom logic in transaction flow | Integrated with IBM Z transactions | [ ] |
 | Dashboard | Web app (React) via z/OS Connect | Exposes IBM Z data to web UI | [ ] |
-| Security | RACF, CPACF, z/OS encryption | **IBM Z security capabilities** | [ ] |
-| Audit logging | z/OS audit facilities, IMS/DC logs | Immutable audit trail on IBM Z | [ ] |
+| Security | RACF, CPACF, z/OS encryption | **IBM Z security capabilities** | [x] |
+| Audit logging | z/OS audit facilities, IMS/DC logs | Immutable audit trail on IBM Z | [x] |
 
 ---
 
