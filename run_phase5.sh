@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # Phase 5 launcher for IBM LinuxONE (s390x / Linux on Z).
 #
-# 1. trains the fraud model if the artifact is missing (or --retrain is given)
+# 1. trains the fraud model if the artifact is missing (or --retrain is given);
+#    training resets the demo registry too (--fresh), because the registry pins
+#    the registered artifact's SHA-256 and a retrained file has a new digest
 # 2. runs the Phase 4 scoring path with a tamper-evident audit, RBAC, model
 #    governance, explainability and fairness monitoring
 # 3. exercises a model promotion and rollback drill
@@ -36,10 +38,13 @@ if [ "${1:-}" = "--retrain" ]; then
   echo "retraining model ..."
   "$PY" -m fraud_detection.train --events 15000 --warmup 2000 --users 200 \
       --fraud-rate 0.03 --trees 60 --depth 3 --out "$MODEL"
+  # new artifact digest -> re-register it (reset the demo registry state)
+  set -- --fresh "$@"
 elif [ ! -f "$MODEL" ]; then
   echo "no model artifact found — training ..."
   "$PY" -m fraud_detection.train --events 15000 --warmup 2000 --users 200 \
       --fraud-rate 0.03 --trees 60 --depth 3 --out "$MODEL"
+  set -- --fresh "$@"
 else
   echo "using cached model: $MODEL"
 fi

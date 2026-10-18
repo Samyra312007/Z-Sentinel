@@ -175,8 +175,13 @@ Phase 5 security and governance demo:
 ```bash
 ./run_phase5.sh
 python3 -m fraud_detection.phase5 --model models/fraud_model.json \
-    --transactions 1500 --demo-reviews 8 --demo-rollback --check
+    --transactions 1500 --demo-reviews 8 --demo-rollback --check --fresh
 ```
+
+Add `--fresh` to any `phase5` run made after retraining: the model registry
+pins each registered artifact's SHA-256, so a retrained artifact has a new
+digest and must be re-registered (the run refuses to serve it otherwise).
+`./run_phase5.sh --retrain` does this automatically.
 
 Rules-only fallback (no model needed):
 
@@ -250,7 +255,8 @@ python3 -m fraud_detection.phase5 \
     --audit-log logs/phase5-decisions.jsonl \
     --audit-key logs/phase5.key \
     --registry logs/phase5-model-registry.json \
-    --tokens logs/phase5-tokens.json
+    --tokens logs/phase5-tokens.json \
+    --fresh
 ```
 
 That run exercises the secure audit chain, the model registry, bearer-token

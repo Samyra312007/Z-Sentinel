@@ -65,6 +65,17 @@ def _prepare_registry(
     """Register, approve and activate the model; optionally exercise rollback."""
     version = model.version
     record = registry.get(version)
+    if record is not None and not registry.verify(version):
+        # The registered digest no longer matches the file on disk: the
+        # artifact was retrained or modified after registration (or removed).
+        # Refuse loudly rather than serving or drilling with an unverified
+        # artifact; --fresh re-registers the current file for the demo.
+        raise ValueError(
+            f"model artifact for {version!r} does not match its registered hash: "
+            f"{model_path} was retrained, modified or removed after it was "
+            "registered. Restore the registered artifact, or re-run with "
+            "--fresh to reset the demo registry and register the current one."
+        )
     if record is None:
         record = registry.register(
             model_path,
@@ -311,25 +322,31 @@ def main(argv: list[str] | None = None) -> int:
         )
         server_config.validate()
 
-    summary, store, monitor, version = run(
-        transactions=args.transactions,
-        users=args.users,
-        fraud_rate=args.fraud_rate,
-        seed=args.seed,
-        warmup=args.warmup,
-        model_path=args.model,
-        config=config,
-        db_path=args.db,
-        audit_path=args.audit_log,
-        key_path=args.audit_key,
-        registry_path=args.registry,
-        token_path=args.tokens,
-        retention_days=args.retention_days,
-        confirm_blocks=confirm,
-        demo_reviews=args.demo_reviews,
-        fresh=args.fresh,
-        demo_rollback=args.demo_rollback,
-    )
+    try:
+        summary, store, monitor, version = run(
+            transactions=args.transactions,
+            users=args.users,
+            fraud_rate=args.fraud_rate,
+            seed=args.seed,
+            warmup=args.warmup,
+            model_path=args.model,
+            config=config,
+            db_path=args.db,
+            audit_path=args.audit_log,
+            key_path=args.audit_key,
+            registry_path=args.registry,
+            token_path=args.tokens,
+            retention_days=args.retention_days,
+            confirm_blocks=confirm,
+            demo_reviews=args.demo_reviews,
+            fresh=args.fresh,
+            demo_rollback=args.demo_rollback,
+        )
+    except ValueError as exc:
+        # e.g. artifact hash mismatch against the registry: one actionable
+        # line instead of a traceback, still a non-zero exit.
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
     phase4 = summary.phase4
     metrics = phase4.metrics
     latency = metrics.get("latency_ms", {})

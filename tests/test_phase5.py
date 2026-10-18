@@ -551,6 +551,22 @@ class TestModelGovernance(unittest.TestCase):
             self.registry.approve("v1", actor="validator")
         self.assertFalse(self.registry.verify("v1"))
 
+    def test_prepare_registry_refuses_artifact_changed_after_registration(self):
+        from fraud_detection.phase5 import _prepare_registry
+
+        model = FraudModel.load(self.first)
+        model.version = "v1"
+        self.registry.register(self.first, version="v1", actor="trainer")
+        self.registry.approve("v1", actor="validator")
+        self.registry.activate("v1", actor="release")
+        with open(self.first, "a", encoding="utf-8") as fh:
+            fh.write(" ")
+        # without a pre-flight this used to pass silently (record already
+        # active) and only blow up inside the rollback drill
+        with self.assertRaisesRegex(ValueError, "registered hash"):
+            _prepare_registry(self.registry, self.first, model, demo_rollback=False)
+        self.assertFalse(self.registry.verify("v1"))
+
     def test_rollback_restores_previous_active_model(self):
         self.registry.register(self.first, version="v1", actor="trainer")
         self.registry.register(self.second, version="v2", actor="trainer")

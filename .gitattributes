@@ -1,0 +1,5 @@
+# Shell scripts must stay LF in the working tree: bash on LinuxONE
+# rejects CRLF scripts with "`\r': command not found". Overrides
+# core.autocrlf=true on Windows checkouts, which would otherwise
+# rewrite run_phase*.sh to CRLF and break them on Linux.
+*.sh text eol=lf
