@@ -1,6 +1,6 @@
 # Fraud Detection Model Card — phase2-1
 
-Generated: 2026-10-18T01:00:05+00:00
+Generated: 2026-10-18T01:06:16+00:00
 Training framework: pure-Python GBDT (`fraud_detection/gbdt.py`), artifact `models/fraud_model.json`
 
 ## Intended use
@@ -39,7 +39,7 @@ and the top contributing signals for each decision.
 | Pipeline capture rate (risk >= 60) | 0.8621 |
 | Pipeline false positive rate | 0.0 |
 | Ring model threshold / AUC | 0.5 / 1.0 |
-| Scoring latency p50 / p99 | 0.073 / 0.179 ms |
+| Scoring latency p50 / p99 | 0.073 / 0.188 ms |
 
 ## Limitations
 - Trained on synthetic data; absolute performance will not transfer to real
