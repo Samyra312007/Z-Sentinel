@@ -1,6 +1,6 @@
 # Fraud Detection Model Card — phase2-1
 
-Generated: 2026-10-17T10:29:26+00:00
+Generated: 2026-10-18T00:55:51+00:00
 Training framework: pure-Python GBDT (`fraud_detection/gbdt.py`), artifact `models/fraud_model.json`
 
 ## Intended use
@@ -11,16 +11,16 @@ and the top contributing signals for each decision.
 ## Data
 - Synthetic transaction + behavioral stream from `fraud_detection/simulator.py`
   (the plan's documented fallback when no real transaction history exists).
-- 15000 measured events after 2000 warm-up events,
-  200 users, fraud rate 0.03.
-- Chronological split: train 10500 / validation 2250 /
-  test 2250 (no random shuffling — avoids look-ahead leakage).
+- 6000 measured events after 800 warm-up events,
+  60 users, fraud rate 0.03.
+- Chronological split: train 4200 / validation 900 /
+  test 900 (no random shuffling — avoids look-ahead leakage).
 - Features are computed by the same `FeatureEngine` used in production scoring,
   so offline/online parity holds by construction.
 
 ## Model
 - **Model 1** — gradient-boosted trees on transaction context:
-  60 trees, depth 3,
+  40 trees, depth 3,
   32 features, class-weighted for fraud prevalence.
 - **Model 2** — online behavioral-biometrics anomaly detector (per-user baseline
   over keystroke/mouse aggregates). Unsupervised; no labels used.
@@ -31,15 +31,15 @@ and the top contributing signals for each decision.
 ## Held-out performance
 | Metric | Value |
 |---|---|
-| ROC-AUC | 0.997 |
-| PR-AUC | 0.9424 |
+| ROC-AUC | 0.9991 |
+| PR-AUC | 0.9793 |
 | Precision @ 80% recall | 1.0 |
-| Precision @ 90% recall | 0.7195 |
-| Calibration ECE | 0.0173 |
-| Pipeline capture rate (risk >= 60) | 0.8308 |
-| Pipeline false positive rate | 0.0032 |
-| Ring model threshold / AUC | 0.8 / 1.0 |
-| Scoring latency p50 / p99 | 0.105 / 0.3 ms |
+| Precision @ 90% recall | 0.931 |
+| Calibration ECE | 0.0184 |
+| Pipeline capture rate (risk >= 60) | 0.8621 |
+| Pipeline false positive rate | 0.0 |
+| Ring model threshold / AUC | 0.5 / 1.0 |
+| Scoring latency p50 / p99 | 0.066 / 0.131 ms |
 
 ## Limitations
 - Trained on synthetic data; absolute performance will not transfer to real
